@@ -112,6 +112,20 @@ Windows 下可用 `setx SMTP_USER ...` 持久化环境变量（程序会回退�
 
 建议节奏：日报每天 08:00；周报每周六 08:30（聚合前 7 天日报）。
 
+## Claude Code skill（可选）
+
+[`skill/frontier-report/SKILL.md`](skill/frontier-report/SKILL.md) 是本项目的
+Claude Code 薄封装：在 Claude 会话里说「跑一下日报」「今天没收到日报，排查一下」
+即可触发——它会选择正确的调用形态、按决策树查计划任务与日志、并在真实发信前
+先向你确认。安装：
+
+```bash
+# Windows
+xcopy /E /I skill\frontier-report %USERPROFILE%\.claude\skills\frontier-report
+# Linux / macOS
+cp -r skill/frontier-report ~/.claude/skills/frontier-report
+```
+
 ## 退出码
 
 | 码 | 含义 |

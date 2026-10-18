@@ -48,6 +48,11 @@ Exit codes: `0` archived & sent · `1` generation/validation failed (no email,
 raw model output kept in `failed-output-*.txt`) · `2` delivery/config error
 (archive kept).
 
+An optional [Claude Code skill](skill/frontier-report/SKILL.md) ships with the
+repo — copy `skill/frontier-report/` into `~/.claude/skills/` to trigger or
+troubleshoot the pipeline conversationally ("run today's report", "the daily
+didn't arrive, help me debug").
+
 ## Development
 
 ```bash
