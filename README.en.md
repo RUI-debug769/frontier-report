@@ -3,7 +3,10 @@
 **Automated AI-frontier daily & weekly email reports**: a headless Claude CLI
 researches the day's (or week's) AI news → output is validated against a strict
 JSON contract → rendered as warm-toned dark HTML (+ plain-text alternative) →
-delivered via SMTP.
+delivered via SMTP. The daily also tracks 2–4 trending/theoretical papers and
+teaches one AI/math/CS concept per issue, with past concepts re-pushed on a
+simplified half-life spaced-repetition schedule (inspired by MaiMemo's KDD'22
+paper; state in `concepts.json`).
 
 Pure Python standard library. **Zero third-party dependencies.**
 Runs on Windows, Linux and macOS. Reports are written in Simplified Chinese

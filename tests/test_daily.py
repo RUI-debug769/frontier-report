@@ -8,6 +8,7 @@ import unittest
 from unittest import mock
 
 from frontier_report import config as _config
+from frontier_report import concepts
 from frontier_report import daily as dr
 from frontier_report import theme as wt
 
@@ -27,6 +28,18 @@ def _base():
             {"id": "policy", "items": [
                 {"name": "中国", "text": "框架 3.0"}]},
         ],
+        "papers": [
+            {"title": "论文甲", "source": "arXiv:2510.00001", "kind": "hot",
+             "technique": "稀疏注意力", "why": "长文本新基线",
+             "url": "https://x/p1"},
+            {"title": "论文乙", "source": "arXiv:2510.00002", "kind": "theory",
+             "technique": "平均场 PDE", "why": "超参迁移理论",
+             "url": "https://x/p2"},
+        ],
+        "concept_new": {
+            "name": "混合专家模型（MoE）", "one_liner": "门控路由到少数专家",
+            "explanation": "先直觉后严谨的解释。", "news_hook": "今日架构新闻"},
+        "concept_reviews": [],
         "deep_reads": [
             {"title": "深读甲", "url": "https://x/a", "why": "推荐理由"}],
     }
@@ -141,6 +154,113 @@ class ValidateDeepTests(unittest.TestCase):
         self.assertEqual(out["deep_reads"][0]["url"], "HTTPS://x/a")
 
 
+class ValidatePapersTests(unittest.TestCase):
+    def test_ok(self):
+        out = dr.parse_daily_json(json.dumps(_base()))
+        self.assertEqual(len(out["papers"]), 2)
+        self.assertEqual(out["papers"][0]["kind"], "hot")
+
+    def test_too_few(self):
+        d = _base(); d["papers"] = d["papers"][:1]
+        with self.assertRaises(dr.DailyReportError):
+            dr.parse_daily_json(json.dumps(d))
+
+    def test_too_many(self):
+        d = _base()
+        d["papers"] = d["papers"] * 3  # 6 篇
+        with self.assertRaises(dr.DailyReportError):
+            dr.parse_daily_json(json.dumps(d))
+
+    def test_missing_papers_key(self):
+        d = _base(); del d["papers"]
+        with self.assertRaises(dr.DailyReportError):
+            dr.parse_daily_json(json.dumps(d))
+
+    def test_bad_kind(self):
+        d = _base(); d["papers"][0]["kind"] = "survey"
+        with self.assertRaises(dr.DailyReportError):
+            dr.parse_daily_json(json.dumps(d))
+
+    def test_bad_url(self):
+        d = _base(); d["papers"][0]["url"] = "ftp://x/p"
+        with self.assertRaises(dr.DailyReportError):
+            dr.parse_daily_json(json.dumps(d))
+
+    def test_missing_technique(self):
+        d = _base(); del d["papers"][0]["technique"]
+        with self.assertRaises(dr.DailyReportError):
+            dr.parse_daily_json(json.dumps(d))
+
+
+class ValidateConceptTests(unittest.TestCase):
+    def test_missing_concept_new(self):
+        d = _base(); del d["concept_new"]
+        with self.assertRaises(dr.DailyReportError):
+            dr.parse_daily_json(json.dumps(d))
+
+    def test_empty_explanation(self):
+        d = _base(); d["concept_new"]["explanation"] = "  "
+        with self.assertRaises(dr.DailyReportError):
+            dr.parse_daily_json(json.dumps(d))
+
+    def test_news_hook_empty_ok(self):
+        d = _base(); d["concept_new"]["news_hook"] = ""
+        out = dr.parse_daily_json(json.dumps(d))
+        self.assertEqual(out["concept_new"]["news_hook"], "")
+
+    def test_reviews_too_many(self):
+        d = _base()
+        d["concept_reviews"] = [
+            {"name": "n%d" % i, "recall_cue": "c", "essence": "e"}
+            for i in range(4)]
+        with self.assertRaises(dr.DailyReportError):
+            dr.parse_daily_json(json.dumps(d))
+
+    def test_review_name_must_match_due(self):
+        due = [{"name": "KL 散度", "last_review": "2026-10-15",
+                "half_life_days": 1.0, "review_count": 1,
+                "one_liner": "", "explanation": ""}]
+        d = _base()
+        d["concept_reviews"] = [
+            {"name": "KL 散度", "recall_cue": "先自测", "essence": "精要"}]
+        out = dr.parse_daily_json(json.dumps(d), due=due)
+        r = out["concept_reviews"][0]
+        self.assertEqual(r["name"], "KL 散度")
+        self.assertEqual(r["review_no"], 2)  # review_count 1 + 本次
+
+    def test_review_name_fuzzy_match(self):
+        due = [{"name": "KL 散度", "last_review": "2026-10-15",
+                "half_life_days": 1.0, "review_count": 0,
+                "one_liner": "", "explanation": ""}]
+        d = _base()
+        d["concept_reviews"] = [
+            {"name": "kl散度", "recall_cue": "c", "essence": "e"}]
+        out = dr.parse_daily_json(json.dumps(d), due=due)
+        self.assertEqual(out["concept_reviews"][0]["name"], "KL 散度")  # 规范化
+
+    def test_review_name_not_in_due_rejected(self):
+        due = [{"name": "KL 散度", "last_review": "2026-10-15",
+                "half_life_days": 1.0, "review_count": 0,
+                "one_liner": "", "explanation": ""}]
+        d = _base()
+        d["concept_reviews"] = [
+            {"name": "交叉熵", "recall_cue": "c", "essence": "e"}]
+        try:
+            dr.parse_daily_json(json.dumps(d), due=due)
+        except dr.DailyReportError as e:
+            self.assertIn("KL 散度", str(e))  # 报错列出合法名称
+        else:
+            self.fail("应抛错")
+
+    def test_review_without_due_skips_matching(self):
+        d = _base()
+        d["concept_reviews"] = [
+            {"name": "任意名称", "recall_cue": "c", "essence": "e"}]
+        out = dr.parse_daily_json(json.dumps(d))  # due=None
+        self.assertEqual(out["concept_reviews"][0]["name"], "任意名称")
+        self.assertIsNone(out["concept_reviews"][0]["review_no"])
+
+
 class ParseRobustnessTests(unittest.TestCase):
     def test_noise_then_json(self):
         d = _base()
@@ -184,6 +304,30 @@ class RenderTextTests(unittest.TestCase):
         self.assertIn("值得深读", t)
         self.assertIn("https://x/a", t)
 
+    def test_papers_and_concept_blocks(self):
+        t = dr.render_daily_text(self.data, "2026-09-23")
+        self.assertIn("热门 Paper 技术 · PAPERS", t)
+        self.assertIn("【热门】论文甲（arXiv:2510.00001）", t)
+        self.assertIn("【理论】论文乙", t)
+        self.assertIn("每日一概念 · 混合专家模型（MoE）", t)
+        self.assertIn("门控路由到少数专家", t)
+        self.assertIn("关联：今日架构新闻", t)
+
+    def test_reviews_block_only_when_present(self):
+        t = dr.render_daily_text(self.data, "2026-09-23")
+        self.assertNotIn("间隔复习", t)  # _base 的 reviews 为空
+        d = _base()
+        d["concept_reviews"] = [
+            {"name": "KL 散度", "recall_cue": "先自测", "essence": "精要"}]
+        due = [{"name": "KL 散度", "last_review": "2026-10-15",
+                "half_life_days": 1.0, "review_count": 1,
+                "one_liner": "", "explanation": ""}]
+        data = dr.parse_daily_json(json.dumps(d), due=due)
+        t2 = dr.render_daily_text(data, "2026-09-23")
+        self.assertIn("间隔复习 · SPACED REVIEW", t2)
+        self.assertIn("【复习】KL 散度（第 2 次）", t2)
+        self.assertIn("先回忆：先自测", t2)
+
     def test_empty_section_omitted(self):
         d = _base(); d["sections"][3]["items"] = []
         data = dr.parse_daily_json(json.dumps(d))
@@ -206,6 +350,21 @@ class RenderHtmlTests(unittest.TestCase):
         self.assertIn("今日速览", h)
         self.assertIn("值得深读", h)
 
+    def test_papers_html(self):
+        h = self.h
+        self.assertIn("热门 Paper 技术", h)
+        self.assertIn('href="https://x/p1"', h)
+        self.assertIn(">热门<", h)
+        self.assertIn(">理论<", h)
+        self.assertIn("稀疏注意力", h)
+
+    def test_concept_html(self):
+        h = self.h
+        self.assertIn("每日一概念", h)
+        self.assertIn("混合专家模型（MoE）", h)
+        self.assertIn("先直觉后严谨的解释。", h)
+        self.assertNotIn("间隔复习", h)  # reviews 为空不出卡
+
     def test_xss_escaped(self):
         d = _base()
         d["briefs"][0] = "<script>x</script>"
@@ -214,6 +373,16 @@ class RenderHtmlTests(unittest.TestCase):
         h = dr.render_daily_html(data, "2026-09-23")
         self.assertNotIn("<script>", h)
         self.assertNotIn('onerror="', h)
+        self.assertIn("&lt;script&gt;", h)
+
+    def test_xss_in_new_blocks_escaped(self):
+        d = _base()
+        d["papers"][0]["technique"] = '<svg onload="a(1)">'
+        d["concept_new"]["explanation"] = "<script>evil</script>"
+        data = dr.parse_daily_json(json.dumps(d))
+        h = dr.render_daily_html(data, "2026-09-23")
+        self.assertNotIn("<svg", h)
+        self.assertNotIn("<script>", h)
         self.assertIn("&lt;script&gt;", h)
 
     def test_url_attr_escaped(self):
@@ -270,13 +439,34 @@ class LoadPromptTests(unittest.TestCase):
                 self.assertEqual(dr._load_daily_prompt(), "config 指定 prompt")
 
 
+class BuildPromptTests(unittest.TestCase):
+    def test_placeholders_injected(self):
+        store = {"concepts": [
+            {"name": "KL 散度", "first_seen": "2026-10-01",
+             "last_review": "2026-10-15", "half_life_days": 1.0,
+             "review_count": 0, "one_liner": "分布差异", "explanation": "解释"}]}
+        due = concepts.due_reviews(store, today=None)
+        prompt = dr.build_daily_prompt(
+            "R=<<CONCEPT_REVIEW>> K=<<CONCEPT_KNOWN>>", store, due)
+        self.assertNotIn("<<CONCEPT_REVIEW>>", prompt)
+        self.assertNotIn("<<CONCEPT_KNOWN>>", prompt)
+        self.assertIn("KL 散度", prompt)  # 复习清单与已知名单均含
+
+    def test_empty_store_prompt(self):
+        prompt = dr.build_daily_prompt(
+            "R=<<CONCEPT_REVIEW>> K=<<CONCEPT_KNOWN>>", {"concepts": []}, [])
+        self.assertIn("无到期复习", prompt)
+        self.assertIn("为空", prompt)
+
+
 class RunDailyTests(unittest.TestCase):
-    """run_daily 编排层：退出码契约（0/1/2）与"失败绝不发信"回归网。"""
+    """run_daily 编排层：退出码契约（0/1/2）、"失败绝不发信"回归网、
+    概念调度状态更新时机。"""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         with open(os.path.join(self.tmp, "prompt.md"), "w", encoding="utf-8") as f:
-            f.write("prompt body")
+            f.write("R=<<CONCEPT_REVIEW>> K=<<CONCEPT_KNOWN>>")
         self.env = {
             "SMTP_HOST": "smtp.qq.com",
             "SMTP_USER": "user",
@@ -295,8 +485,8 @@ class RunDailyTests(unittest.TestCase):
                           side_effect=lambda n, d="": self.env.get(n, d)).start()
         self.send_mail = mock.patch.object(dr.rc, "send_html_mail").start()
 
-    def _claude_ok(self):
-        self.run_claude.return_value = (0, json.dumps(_base()), "")
+    def _claude_ok(self, data=None):
+        self.run_claude.return_value = (0, json.dumps(data or _base()), "")
 
     def _failed_output_exists(self):
         fp = os.path.join(self.tmp,
@@ -307,6 +497,13 @@ class RunDailyTests(unittest.TestCase):
         fp = os.path.join(self.tmp,
                           "ai-daily-report-%s.md" % time.strftime("%Y-%m-%d"))
         return os.path.exists(fp)
+
+    def _store_path(self):
+        return os.path.join(self.tmp, concepts.STORE_FILENAME)
+
+    def _load_store(self):
+        with open(self._store_path(), encoding="utf-8") as f:
+            return json.load(f)
 
     def test_prompt_unavailable(self):
         mock.patch.object(dr, "_load_daily_prompt", return_value=None).start()
@@ -362,6 +559,65 @@ class RunDailyTests(unittest.TestCase):
         self.assertEqual(args[0][1], 587)  # port 为 int
         self.assertEqual(args[0][5],
                          "AI前沿日报 - %s" % time.strftime("%Y-%m-%d"))
+
+    def test_new_concept_saved_on_success(self):
+        self._claude_ok()
+        self.assertEqual(dr.run_daily(), 0)
+        store = self._load_store()
+        self.assertEqual(len(store["concepts"]), 1)
+        c = store["concepts"][0]
+        self.assertEqual(c["name"], "混合专家模型（MoE）")
+        self.assertEqual(c["half_life_days"], 1.0)
+        self.assertEqual(c["last_review"], time.strftime("%Y-%m-%d"))
+
+    def test_store_not_updated_on_send_failure(self):
+        self._claude_ok()
+        self.send_mail.side_effect = dr.rc.ReportError("smtp down")
+        self.assertEqual(dr.run_daily(), 2)
+        self.assertFalse(os.path.exists(self._store_path()))
+
+    def test_store_not_updated_on_validation_failure(self):
+        self.run_claude.return_value = (0, "garbage", "")
+        self.assertEqual(dr.run_daily(), 1)
+        self.assertFalse(os.path.exists(self._store_path()))
+
+    def test_review_flow_end_to_end(self):
+        # 预置到期概念 → prompt 注入复习清单 → 模型复推 → 半衰期增长
+        store = {"concepts": [
+            {"name": "KL 散度", "first_seen": "2026-10-01",
+             "last_review": "2026-10-10", "half_life_days": 1.0,
+             "review_count": 0, "one_liner": "分布差异",
+             "explanation": "首次解释", "news_hook": ""}]}
+        with open(self._store_path(), "w", encoding="utf-8") as f:
+            json.dump(store, f, ensure_ascii=False)
+        d = _base()
+        d["concept_reviews"] = [
+            {"name": "kl散度", "recall_cue": "先自测", "essence": "精要"}]
+        self._claude_ok(d)
+        self.assertEqual(dr.run_daily(), 0)
+        # prompt 注入了复习清单与已知名单
+        prompt_sent = self.run_claude.call_args[0][0]
+        self.assertIn("KL 散度", prompt_sent)
+        # 调度状态推进：复习计数 +1、半衰期 1.0 → 2.3
+        c = self._load_store()["concepts"][0]
+        self.assertEqual(c["review_count"], 1)
+        self.assertEqual(c["half_life_days"], 2.3)
+        self.assertEqual(c["last_review"], time.strftime("%Y-%m-%d"))
+
+    def test_review_name_mismatch_fails_validation(self):
+        store = {"concepts": [
+            {"name": "KL 散度", "first_seen": "2026-10-01",
+             "last_review": "2026-10-10", "half_life_days": 1.0,
+             "review_count": 0, "one_liner": "", "explanation": "", "news_hook": ""}]}
+        with open(self._store_path(), "w", encoding="utf-8") as f:
+            json.dump(store, f, ensure_ascii=False)
+        d = _base()
+        d["concept_reviews"] = [
+            {"name": "交叉熵", "recall_cue": "c", "essence": "e"}]
+        self._claude_ok(d)
+        self.assertEqual(dr.run_daily(), 1)
+        self.send_mail.assert_not_called()
+        self.assertTrue(self._failed_output_exists())
 
 
 if __name__ == "__main__":

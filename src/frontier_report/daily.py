@@ -3,9 +3,11 @@
 """
 AI 前沿日报（每天）链路。
 
-claude 输出严格 JSON：今日速览 + 四栏目（人物/公司/事件/政策）+ 深读；
+claude 输出严格 JSON：今日速览 + 四栏目（人物/公司/事件/政策）+ 热门 Paper
+技术（2-4 篇，hot/theory）+ 每日一概念（新概念 + 间隔复习）+ 深读；
 schema 校验后渲染为分栏紧凑式纯文本 + 暖陶暗色 HTML，SMTP 发出。
-运行时/主题复用 common / theme。纯标准库。
+概念调度（简化半衰期模型）在 concepts 模块；运行时/主题复用 common / theme。
+纯标准库。
 
 路径解析：模块级 DAILY_DIR 默认为 None，运行时经 _daily_dir() 解析——
 模块全局优先（测试可 patch），否则取 config 的 <data_dir>/daily。
@@ -17,6 +19,7 @@ import time
 from importlib import resources
 
 from . import common as rc
+from . import concepts
 from . import config as _config
 from . import theme as wt
 
@@ -28,6 +31,12 @@ SECTION_TITLES = {
     "companies": ("公司与产业链", "COMPANIES"),
     "events": ("重大事件", "EVENTS"),
     "policy": ("政策与监管", "POLICY"),
+}
+
+PAPER_KINDS = ("hot", "theory")
+PAPER_KIND_STYLE = {
+    "hot": ("热门", "#3D2C23", "#E09A82"),
+    "theory": ("理论", "#3A3226", "#D9B98A"),
 }
 
 
@@ -69,12 +78,20 @@ def _load_daily_prompt():
         return None
 
 
-def _req_str(obj, key, label):
+def build_daily_prompt(template, store, due, today=None):
+    """模板注入概念调度信息：复习清单 + 已知概念名单。"""
+    return (template
+            .replace("<<CONCEPT_REVIEW>>",
+                     concepts.format_review_block(due, today=today))
+            .replace("<<CONCEPT_KNOWN>>", concepts.format_known_names(store)))
+
+
+def _req_str(obj, key, label, allow_empty=False):
     v = obj.get(key)
     if not isinstance(v, str):
         raise DailyReportError("%s 必须是字符串" % label)
     v = v.strip()
-    if not v:
+    if not allow_empty and not v:
         raise DailyReportError("%s 不可为空" % label)
     return v
 
@@ -105,19 +122,80 @@ def _validate_section(obj, idx):
     return {"id": sid, "items": [_validate_item(it, j) for j, it in enumerate(items)]}
 
 
+def _check_url(url, label):
+    low = url.lower()
+    if not (low.startswith("http://") or low.startswith("https://")):
+        raise DailyReportError("%s 必须以 http(s):// 开头" % label)
+
+
 def _validate_deep(obj, idx):
     if not isinstance(obj, dict):
         raise DailyReportError("deep_reads[%d] 不是对象" % idx)
     title = _req_str(obj, "title", "deep_reads[%d].title" % idx)
     url = _req_str(obj, "url", "deep_reads[%d].url" % idx)
     why = _req_str(obj, "why", "deep_reads[%d].why" % idx)
-    low = url.lower()
-    if not (low.startswith("http://") or low.startswith("https://")):
-        raise DailyReportError("deep_reads[%d].url 必须以 http(s):// 开头" % idx)
+    _check_url(url, "deep_reads[%d].url" % idx)
     return {"title": title, "url": url, "why": why}
 
 
-def _validate_daily(data):
+def _validate_paper(obj, idx):
+    if not isinstance(obj, dict):
+        raise DailyReportError("papers[%d] 不是对象" % idx)
+    title = _req_str(obj, "title", "papers[%d].title" % idx)
+    source = _req_str(obj, "source", "papers[%d].source" % idx)
+    kind = obj.get("kind")
+    if kind not in PAPER_KINDS:
+        raise DailyReportError(
+            "papers[%d].kind 必须为 hot 或 theory，实际 %r" % (idx, kind))
+    technique = _req_str(obj, "technique", "papers[%d].technique" % idx)
+    why = _req_str(obj, "why", "papers[%d].why" % idx)
+    url = _req_str(obj, "url", "papers[%d].url" % idx)
+    _check_url(url, "papers[%d].url" % idx)
+    return {"title": title, "source": source, "kind": kind,
+            "technique": technique, "why": why, "url": url}
+
+
+def _validate_concept_new(obj):
+    if not isinstance(obj, dict):
+        raise DailyReportError("concept_new 缺失或不是对象")
+    name = _req_str(obj, "name", "concept_new.name")
+    one_liner = _req_str(obj, "one_liner", "concept_new.one_liner")
+    explanation = _req_str(obj, "explanation", "concept_new.explanation")
+    news_hook = _req_str(obj, "news_hook", "concept_new.news_hook",
+                         allow_empty=True)
+    return {"name": name, "one_liner": one_liner,
+            "explanation": explanation, "news_hook": news_hook}
+
+
+def _validate_concept_reviews(obj, due):
+    """复习条目：name 必须能匹配到期清单（due 为 None 时跳过匹配，
+    仅做形态校验）。匹配成功则规范化为清单中的原始名称并附复习序号。"""
+    if not isinstance(obj, list) or len(obj) > concepts.MAX_REVIEWS_PER_DAY:
+        raise DailyReportError(
+            "concept_reviews 必须为 0-%d 条数组" % concepts.MAX_REVIEWS_PER_DAY)
+    norm = []
+    for i, r in enumerate(obj):
+        if not isinstance(r, dict):
+            raise DailyReportError("concept_reviews[%d] 不是对象" % i)
+        name = _req_str(r, "name", "concept_reviews[%d].name" % i)
+        cue = _req_str(r, "recall_cue", "concept_reviews[%d].recall_cue" % i)
+        essence = _req_str(r, "essence", "concept_reviews[%d].essence" % i)
+        entry = {"name": name, "recall_cue": cue, "essence": essence,
+                 "review_no": None}
+        if due is not None:
+            matched = concepts.match_review_name(name, due)
+            if matched is None:
+                valid = "、".join(c["name"] for c in due) or "（今日无到期概念）"
+                raise DailyReportError(
+                    "concept_reviews[%d].name %r 不在今日复习清单内（应为：%s）"
+                    % (i, name, valid))
+            entry["name"] = matched["name"]
+            entry["review_no"] = matched.get("review_count", 0) + 1
+        norm.append(entry)
+    return norm
+
+
+def _validate_daily(data, due=None):
     if not isinstance(data, dict):
         raise DailyReportError("顶层不是 JSON 对象")
 
@@ -138,19 +216,30 @@ def _validate_daily(data):
         raise DailyReportError("sections 必须为固定 4 个元素")
     norm_sections = [_validate_section(s, i) for i, s in enumerate(sections)]
 
+    papers = data.get("papers")
+    if not isinstance(papers, list) or not (2 <= len(papers) <= 4):
+        raise DailyReportError("papers 必须为 2-4 条")
+    norm_papers = [_validate_paper(p, i) for i, p in enumerate(papers)]
+
+    norm_concept_new = _validate_concept_new(data.get("concept_new"))
+    norm_reviews = _validate_concept_reviews(data.get("concept_reviews"), due)
+
     deeps = data.get("deep_reads")
     if not isinstance(deeps, list) or not (1 <= len(deeps) <= 2):
         raise DailyReportError("deep_reads 必须为 1-2 条")
     norm_deeps = [_validate_deep(d, i) for i, d in enumerate(deeps)]
 
     return {"briefs": norm_briefs, "sections": norm_sections,
-            "deep_reads": norm_deeps}
+            "papers": norm_papers, "concept_new": norm_concept_new,
+            "concept_reviews": norm_reviews, "deep_reads": norm_deeps}
 
 
-def parse_daily_json(raw):
-    """提取并校验日报；垃圾输入给泛化文案，schema 失败冒泡最近原因。"""
+def parse_daily_json(raw, due=None):
+    """提取并校验日报；垃圾输入给泛化文案，schema 失败冒泡最近原因。
+    due 为当日到期复习清单（concepts.due_reviews 的结果），用于校验
+    concept_reviews 的名称匹配。"""
     try:
-        return rc.extract_json(raw, validator=_validate_daily)
+        return rc.extract_json(raw, validator=lambda obj: _validate_daily(obj, due))
     except rc.JsonExtractError as e:
         if e.reason is not None:
             raise DailyReportError(
@@ -188,6 +277,35 @@ def render_daily_text(data, date_str):
 
     L.append("")
     L.append("-" * 34)
+    L.append("热门 Paper 技术 · PAPERS")
+    for p in data["papers"]:
+        tag = PAPER_KIND_STYLE[p["kind"]][0]
+        L.append("【%s】%s（%s）" % (tag, p["title"], p["source"]))
+        L.append("· 技术：%s" % p["technique"])
+        L.append("· 价值：%s" % p["why"])
+        L.append("  %s" % p["url"])
+
+    cn = data["concept_new"]
+    L.append("")
+    L.append("-" * 34)
+    L.append("每日一概念 · %s" % cn["name"])
+    L.append(cn["one_liner"])
+    L.append(cn["explanation"])
+    if cn["news_hook"]:
+        L.append("关联：%s" % cn["news_hook"])
+
+    if data["concept_reviews"]:
+        L.append("")
+        L.append("-" * 34)
+        L.append("间隔复习 · SPACED REVIEW")
+        for r in data["concept_reviews"]:
+            no = "（第 %d 次）" % r["review_no"] if r["review_no"] else ""
+            L.append("【复习】%s%s" % (r["name"], no))
+            L.append("先回忆：%s" % r["recall_cue"])
+            L.append("精要：%s" % r["essence"])
+
+    L.append("")
+    L.append("-" * 34)
     L.append("值得深读")
     for d in data["deep_reads"]:
         L.append("· %s" % d["title"])
@@ -213,17 +331,21 @@ def _brief_html(briefs):
     return "".join(rows)
 
 
-def _section_html(sec):
-    items = sec["items"]
-    if not items:
-        return ""
-    cn, en = SECTION_TITLES[sec["id"]]
-    head = (
+def _section_head(cn, en):
+    return (
         '<div style="margin:22px 0 10px;">'
         '<span style="font-family:%s;font-size:15px;color:%s;">%s</span>'
         '<span style="font-size:10px;letter-spacing:2px;color:%s;margin-left:8px;">%s</span>'
         '</div>'
         % (wt.TITLE_FONT, wt.TEXT_CARD_TITLE, wt.esc(cn), wt.TEXT_RIGHT, en))
+
+
+def _section_html(sec):
+    items = sec["items"]
+    if not items:
+        return ""
+    cn, en = SECTION_TITLES[sec["id"]]
+    head = _section_head(cn, en)
 
     rows = []
     last_group = None
@@ -241,6 +363,76 @@ def _section_html(sec):
             '</td></tr></table>'
             % (wt.ACCENT_SOFT, wt.esc(it["name"]), wt.TEXT_BODY, wt.esc(it["text"])))
     return head + "".join(rows)
+
+
+def _kind_tag(kind):
+    name, bg, fg = PAPER_KIND_STYLE[kind]
+    return (
+        '<span style="display:inline-block;font-size:10.5px;font-weight:600;'
+        'letter-spacing:1px;padding:2px 8px;border-radius:99px;'
+        'background:%s;color:%s;">%s</span>' % (bg, fg, wt.esc(name)))
+
+
+def _papers_html(papers):
+    rows = []
+    for p in papers:
+        rows.append(
+            '<table role="presentation" cellpadding="0" cellspacing="0" width="100%%">'
+            '<tr><td style="padding:8px 0;border-top:1px solid rgba(255,255,255,.05);">'
+            '%s <a href="%s" style="font-size:13px;font-weight:600;color:%s;'
+            'text-decoration:none;">%s</a>'
+            '<span style="font-size:11px;color:%s;">（%s）</span>'
+            '<div style="font-size:12.5px;line-height:1.65;color:%s;margin-top:4px;">'
+            '<b style="color:%s;">技术：</b>%s</div>'
+            '<div style="font-size:12px;line-height:1.6;color:%s;margin-top:2px;">'
+            '价值：%s</div>'
+            '</td></tr></table>'
+            % (_kind_tag(p["kind"]), wt.esc(p["url"]), wt.GOLD, wt.esc(p["title"]),
+               wt.TEXT_RIGHT, wt.esc(p["source"]),
+               wt.TEXT_BODY, wt.ACCENT_SOFT, wt.esc(p["technique"]),
+               wt.TEXT_MUTED, wt.esc(p["why"])))
+    return _section_head("热门 Paper 技术", "PAPERS") + "".join(rows)
+
+
+def _concept_new_html(cn):
+    hook = ""
+    if cn["news_hook"]:
+        hook = ('<div style="font-size:11.5px;line-height:1.6;color:%s;margin-top:8px;">'
+                '关联：%s</div>' % (wt.TEXT_RIGHT, wt.esc(cn["news_hook"])))
+    return (
+        '<table role="presentation" width="100%%" cellpadding="0" cellspacing="0" '
+        'style="background:%s;border-radius:12px;margin:18px 0 0;">'
+        '<tr><td style="padding:15px 18px;">'
+        '<div style="font-size:11px;letter-spacing:2px;color:%s;margin-bottom:6px;">每日一概念</div>'
+        '<div style="font-family:%s;font-size:16px;line-height:1.45;color:%s;">%s</div>'
+        '<div style="font-size:12.5px;font-weight:600;color:%s;margin-top:6px;">%s</div>'
+        '%s%s'
+        '</td></tr></table>'
+        % (wt.BG_CARD, wt.ACCENT,
+           wt.TITLE_FONT, wt.TEXT_CARD_TITLE, wt.esc(cn["name"]),
+           wt.ACCENT_SOFT, wt.esc(cn["one_liner"]),
+           wt.paras(cn["explanation"], wt.TEXT_BODY, size="12.5px"), hook))
+
+
+def _reviews_html(reviews):
+    if not reviews:
+        return ""
+    rows = []
+    for r in reviews:
+        no = "第 %d 次" % r["review_no"] if r["review_no"] else "复习"
+        rows.append(
+            '<div style="margin:0 0 12px;">'
+            '<div style="font-size:12.5px;font-weight:600;color:%s;">%s'
+            '<span style="font-size:10.5px;font-weight:400;color:%s;margin-left:6px;">%s</span></div>'
+            '<div style="font-size:12px;line-height:1.65;color:%s;margin-top:3px;">'
+            '<i>先回忆：%s</i></div>'
+            '<div style="font-size:12.5px;line-height:1.7;color:%s;margin-top:3px;">%s</div>'
+            '</div>'
+            % (wt.GOLD, wt.esc(r["name"]), wt.TEXT_RIGHT, wt.esc(no),
+               wt.TEXT_MUTED, wt.esc(r["recall_cue"]),
+               wt.TEXT_BODY, wt.esc(r["essence"])))
+    return ('<div style="height:18px;"></div>'
+            + wt.dashed_card("间隔复习 · SPACED REVIEW", "".join(rows)))
 
 
 def _deep_html(deeps):
@@ -276,10 +468,13 @@ def render_daily_html(data, date_str):
         + '<div style="height:14px;"></div>'
         + briefs_block
         + sections
+        + _papers_html(data["papers"])
+        + _concept_new_html(data["concept_new"])
+        + _reviews_html(data["concept_reviews"])
         + '<div style="height:18px;"></div>'
         + deep_card
         + wt.divider(margin="22px 0 14px")
-        + wt.footer(["由 frontier-report 自动编排生成"]))
+        + wt.footer(["由 frontier-report 自动编排生成 · 概念按半衰期模型间隔复推"]))
     return wt.panel_page("AI 前沿日报 %s" % dot, inner)
 
 
@@ -298,6 +493,30 @@ SAMPLE_DATA = {
         {"id": "policy", "items": [
             {"name": "中国", "text": "发布安全治理框架 3.0。", "group": ""}]},
     ],
+    "papers": [
+        {"title": "示例论文：稀疏注意力的新纪元", "source": "arXiv:2510.00001",
+         "kind": "hot",
+         "technique": "用可学习的块稀疏掩码把长上下文注意力成本降到近线性。",
+         "why": "长文本推理成本的新基线。", "url": "https://example.com/paper-a"},
+        {"title": "示例论文：梯度流的平均场刻画", "source": "arXiv:2510.00002",
+         "kind": "theory",
+         "technique": "把宽度趋无穷的残差网络训练动力学归结为平均场 PDE。",
+         "why": "为超参数迁移提供理论解释。", "url": "https://example.com/paper-b"},
+    ],
+    "concept_new": {
+        "name": "混合专家模型（MoE）",
+        "one_liner": "用门控网络把每个输入路由到少数专家子网络的大模型架构。",
+        "explanation": "MoE 的核心直觉是“分科问诊”：不必让每个参数参与每次计算。"
+        "门控网络为每个 token 选出 top-k 个专家，只激活这些专家的参数，"
+        "于是总参数可以很大而单次计算量可控。最小例子：128 个专家每次激活 8 个，"
+        "计算量约为稠密模型的 1/16。代价是路由均衡与显存占用的工程复杂度。",
+        "news_hook": "今日某旗舰模型公布采用细粒度 MoE 架构。"},
+    "concept_reviews": [
+        {"name": " KL 散度 ",
+         "recall_cue": "为什么说 KL(p‖q) ≠ KL(q‖p)？用“避重就轻 vs 求全”回忆。",
+         "essence": "KL 散度度量两个分布的差异，但不满足对称性，不是距离。"
+         "前向 KL 倾向覆盖 p 的所有支撑集（求全），反向 KL 倾向锁住众数（避重就轻），"
+         "这一不对称性决定了蒸馏与变分推断的行为。", "review_no": 2}],
     "deep_reads": [
         {"title": "示例深读：Agent 自主性边界", "url": "https://example.com/a",
          "why": "一手观察样本，理解安全测试的披露伦理。"},
@@ -312,11 +531,22 @@ def _run_claude_daily(prompt):
 
 def run_daily():
     log("=== daily report task start ===")
-    prompt = _load_daily_prompt()
-    if prompt is None:
+    daily_dir = _daily_dir()
+    try:
+        store = concepts.load_store(daily_dir)
+    except concepts.ConceptStoreError as e:
+        log("WARN %s；以空概念库继续" % e)
+        store = {"concepts": []}
+    due = concepts.due_reviews(store)
+    if due:
+        log("到期复习概念: %s" % "、".join(c["name"] for c in due))
+
+    template = _load_daily_prompt()
+    if template is None:
         log("ERROR: 日报 prompt 不可用（覆盖路径/数据目录/包内置均失败）")
         return 1
-    log("prompt length: %d chars" % len(prompt))
+    prompt = build_daily_prompt(template, store, due)
+    log("prompt length: %d chars（到期复习 %d 个）" % (len(prompt), len(due)))
 
     try:
         code, raw, err = _run_claude_daily(prompt)
@@ -336,9 +566,9 @@ def run_daily():
         return 1
 
     try:
-        data = parse_daily_json(raw)
+        data = parse_daily_json(raw, due=due)
     except DailyReportError as e:
-        fp = os.path.join(_daily_dir(),
+        fp = os.path.join(daily_dir,
                           "failed-output-%s.txt" % time.strftime("%Y-%m-%d"))
         with open(fp, "w", encoding="utf-8") as f:
             f.write(raw)
@@ -349,7 +579,7 @@ def run_daily():
     text = render_daily_text(data, ds)
     htm = render_daily_html(data, ds)
 
-    report_file = os.path.join(_daily_dir(), "ai-daily-report-%s.md" % ds)
+    report_file = os.path.join(daily_dir, "ai-daily-report-%s.md" % ds)
     with open(report_file, "w", encoding="utf-8") as f:
         f.write(text)
     log("saved report: %s" % report_file)
@@ -373,5 +603,13 @@ def run_daily():
     except rc.ReportError as e:
         log("ERROR: 发信失败: %s" % e)
         return 2
+
+    # 投递成功后才推进概念调度：发信失败不消耗复习、不登记新概念
+    concepts.apply_issue(store, data["concept_new"], data["concept_reviews"], due)
+    try:
+        concepts.save_store(daily_dir, store)
+        log("概念库已更新（共 %d 个概念）" % len(store["concepts"]))
+    except OSError as e:
+        log("WARN 概念库保存失败（不影响本期投递）: %s" % e)
     log("=== daily report task end ===")
     return 0

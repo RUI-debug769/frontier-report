@@ -16,9 +16,20 @@
 ## 效果
 
 - **日报**：今日速览（3–5 条）+ 四栏目（领军人物 / 公司与产业链 / 重大事件 /
-  政策与监管）+ 值得深读，约 3 分钟扫读
+  政策与监管）+ **热门 Paper 技术**（2–4 篇，标注热门应用/理论创新）+
+  **每日一概念**（AI/数学/CS 概念精讲，按半衰期模型间隔复习）+ 值得深读，
+  约 5 分钟扫读
 - **周报**：聚合最近 7 份日报做跨日综合，1 条头条 + 5–7 张概念/想法/路径卡片
   + 3–5 条信号，周末 5–15 分钟深读
+
+### 间隔重复学习机（每日一概念）
+
+思想提炼自墨墨背单词团队的 KDD 2022 间隔重复调度论文：每个概念记录一个
+**记忆半衰期** h，间隔 Δ 后回忆概率约 2^(-Δ/h)；当 Δ ≥ h（即将遗忘）时
+该概念自动排入当日报纸，以「回忆提示 + 精要重述」复推，每次复推后半衰期
+×2.3——间隔自然拉宽（1 → 2.3 → 5.3 → 12 → 28 → 64 天）。调度由
+`concepts.py` 确定性地完成（状态存 `<数据目录>/daily/concepts.json`），
+模型只负责生成文本；投递失败不消耗复习、不登记新概念。
 
 渲染样例见 [`examples/sample.html`](examples/sample.html)（暖陶暗色、640px、
 table 布局、全内联 CSS，主流邮件客户端兼容）与
@@ -98,7 +109,8 @@ Windows 下可用 `setx SMTP_USER ...` 持久化环境变量（程序会回退�
 
 ```
 ~/.frontier-report/
-├── daily/    # ai-daily-report-YYYY-MM-DD.md、run.log、failed-output-*.txt、prompt.md（可选覆盖）
+├── daily/    # ai-daily-report-YYYY-MM-DD.md、concepts.json（概念库）、
+              # run.log、failed-output-*.txt、prompt.md（可选覆盖）
 └── weekly/   # ai-weekly-ideas-YYYY-MM-DD.md、run.log、failed-output-*.txt、prompt.md（可选覆盖）
 ```
 
@@ -138,7 +150,11 @@ cp -r skill/frontier-report ~/.claude/skills/frontier-report
 
 - **日报**：`briefs` 3–5 条；`sections` 固定 4 个且 id 顺序锁定
   （people / companies / events / policy），每栏目 items 0–12 条；
-  companies 必标分层（基础层 / 技术层 / 应用层）；`deep_reads` 1–2 条，url 限 http(s)。
+  companies 必标分层（基础层 / 技术层 / 应用层）；
+  `papers` 2–4 条（kind 限 hot/theory，url 限 http(s)）；
+  `concept_new` 必填（name / one_liner / explanation，news_hook 可空）；
+  `concept_reviews` 0–3 条（name 必须与当日注入的复习清单匹配）；
+  `deep_reads` 1–2 条，url 限 http(s)。
 - **周报**：1 条头条 + 5–7 张卡片（concept / idea / path，概念与想法 ≥70%），
   附 3–5 条信号。
 
