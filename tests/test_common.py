@@ -110,6 +110,68 @@ class RunClaudeTests(unittest.TestCase):
         finally:
             rc.subprocess.run = orig
 
+    def test_host_session_vars_blocked_by_whitelist(self):
+        # 宿主会话（Claude 桌面端）注入的网关变量与遥测变量一律不得
+        # 泄漏给子 claude（会导致误报 Not logged in）；系统基座变量透传
+        seen = {}
+
+        class FakeProc:
+            returncode = 0
+            stdout = b"o"
+            stderr = b"e"
+
+        def _fake_run(*a, **k):
+            seen["env"] = k.get("env")
+            return FakeProc()
+        orig_run = rc.subprocess.run
+        orig_env = dict(os.environ)
+        rc.subprocess.run = _fake_run
+        try:
+            os.environ["CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST"] = "1"
+            os.environ["ANTHROPIC_BASE_URL"] = "http://127.0.0.1:15721/gw"
+            os.environ["ANTHROPIC_AUTH_TOKEN"] = "host-token"
+            os.environ["CLAUDE_CODE_SESSION_ID"] = "some-session"
+            os.environ["BAGGAGE"] = "sentry-stuff"
+            os.environ["MY_RANDOM_VAR"] = "x"
+            rc.run_claude("p", 100, extra_tools=(), claude_exe="claude")
+            env = seen["env"]
+            for bad in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN",
+                        "CLAUDE_CODE_SESSION_ID", "BAGGAGE", "MY_RANDOM_VAR",
+                        "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST"):
+                self.assertNotIn(bad, env)
+            self.assertIn("PATH", env)
+        finally:
+            rc.subprocess.run = orig_run
+            os.environ.clear()
+            os.environ.update(orig_env)
+
+    def test_user_own_env_not_stripped(self):
+        # 无托管标记时（计划任务/普通终端）：用户自己的 ANTHROPIC_*
+        # 端点配置必须透传，不能误删
+        seen = {}
+
+        class FakeProc:
+            returncode = 0
+            stdout = b"o"
+            stderr = b"e"
+
+        def _fake_run(*a, **k):
+            seen["env"] = k.get("env")
+            return FakeProc()
+        orig_run = rc.subprocess.run
+        orig_env = dict(os.environ)
+        rc.subprocess.run = _fake_run
+        try:
+            os.environ.pop("CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", None)
+            os.environ["ANTHROPIC_BASE_URL"] = "https://my-own-gateway.example"
+            rc.run_claude("p", 100, extra_tools=(), claude_exe="claude")
+            self.assertEqual(seen["env"].get("ANTHROPIC_BASE_URL"),
+                             "https://my-own-gateway.example")
+        finally:
+            rc.subprocess.run = orig_run
+            os.environ.clear()
+            os.environ.update(orig_env)
+
 
 class SendHtmlMailTests(unittest.TestCase):
     def _factory(self, fails):

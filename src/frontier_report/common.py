@@ -148,6 +148,43 @@ def extract_json(raw, validator=None):
     raise JsonExtractError("no valid json object", reason=last_reason)
 
 
+# 子 claude 的白名单环境基座：系统定位、用户目录、代理。
+# claude 的登录态在 ~/.claude/.credentials.json，模型/网关配置在
+# ~/.claude/settings.json，只需这些变量即可正常工作。
+_CHILD_ENV_BASE = (
+    "PATH", "PATHEXT", "COMSPEC", "OS",
+    "SystemRoot", "SYSTEMROOT", "WINDIR", "windir",
+    "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "HOME",
+    "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "PROGRAMFILES",
+    "TEMP", "TMP", "TMPDIR",
+    "USER", "USERNAME", "LOGNAME", "SHELL", "TERM",
+    "LANG", "LC_ALL", "LC_CTYPE", "TZ",
+    "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME",
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+    "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+)
+
+# 用户自己的 claude 端点/密钥配置（仅非宿主会话透传，见 _child_env）
+_CHILD_ENV_AUTH = ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN",
+                   "ANTHROPIC_API_KEY")
+
+
+def _child_env():
+    """子 claude 的白名单环境。
+
+    在 Claude 桌面端/Agent 会话里手动触发时，父进程环境带大量宿主会话变量
+    （ANTHROPIC_BASE_URL 指向宿主本地网关、CLAUDE_CODE_*、BAGGAGE 等），
+    子 claude 继承后会误报 "Not logged in"。黑名单剥不净（变量随版本增长），
+    故用白名单：只透传系统基座变量；用户自己的 ANTHROPIC_* 端点配置
+    仅在非宿主会话（计划任务/cron/普通终端）透传——宿主会话里同名变量
+    是宿主网关的，不是用户的，必须丢弃，子进程回退本机登录态。
+    检测标记：CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST。"""
+    env = {k: os.environ[k] for k in _CHILD_ENV_BASE if k in os.environ}
+    if not os.environ.get("CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST"):
+        env.update({k: os.environ[k] for k in _CHILD_ENV_AUTH if k in os.environ})
+    return env
+
+
 def run_claude(prompt, timeout, extra_tools=("WebSearch", "WebFetch"),
                claude_exe=None):
     """UTF-8 stdin 注入调 claude CLI。返回三元组 (returncode, stdout, stderr)：
@@ -167,6 +204,7 @@ def run_claude(prompt, timeout, extra_tools=("WebSearch", "WebFetch"),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         timeout=timeout,
+        env=_child_env(),
     )
     out = strip_ansi(proc.stdout.decode("utf-8", errors="replace"))
     err = strip_ansi(proc.stderr.decode("utf-8", errors="replace"))
