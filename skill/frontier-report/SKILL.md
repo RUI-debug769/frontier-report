@@ -59,6 +59,8 @@ frontier-report 是一个已安装的 CLI：headless Claude 深研 → JSON 校�
    - 其他非 0 → 进入第 2 步。
 2. **看日志**：`<数据目录>/<daily|weekly>/run.log` 最后 20 行
    （默认数据目录 `~/.frontier-report`）。日志含每步状态与退出码语义。
+   注意 run.log 在**首次实际运行后才生成**——文件不存在说明新装系统还没跑过，
+   用存档文件日期与计划任务 LastRunTime 佐证，不要当成故障。
 3. **退出码 1（生成失败）**：看同目录 `failed-output-<日期>.txt` 里
    模型的原始输出，对照日志中「最后一次校验」的原因——通常是模型没按
    JSON 契约输出，属偶发，重跑一次或次日自愈；连续失败才需要调 prompt。
