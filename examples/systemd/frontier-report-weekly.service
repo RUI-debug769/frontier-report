@@ -1,0 +1,10 @@
+[Unit]
+Description=frontier-report AI weekly report
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/frontier-report weekly
+# 生成约需 5-8 分钟，留足余量
+TimeoutStartSec=2400

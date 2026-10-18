@@ -1,0 +1,11 @@
+[Unit]
+Description=frontier-report AI daily report
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# 按实际安装路径调整（which frontier-report）
+ExecStart=%h/.local/bin/frontier-report daily
+# 生成约需 4-6 分钟，留足余量
+TimeoutStartSec=1800

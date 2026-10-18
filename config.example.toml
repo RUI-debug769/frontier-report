@@ -1,0 +1,32 @@
+# frontier-report 配置示例
+# 复制为 config.toml 使用。搜索顺序：
+#   --config 指定 > $FRONTIER_REPORT_CONFIG > ./config.toml > <数据目录>/config.toml
+# 优先级：CLI 参数 > 环境变量 > 本文件 > 默认值
+
+# 数据目录：存档 / 日志 / 失败样本均在此。默认 ~/.frontier-report
+# 也可通过环境变量 FRONTIER_REPORT_DATA_DIR 或 CLI --data-dir 覆盖
+# data_dir = "~/.frontier-report"
+
+# claude CLI 路径。缺省自动发现（$FRONTIER_CLAUDE_EXE > PATH）
+# Windows 示例：claude_exe = 'C:\Users\<你>\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe'
+# claude_exe = "/usr/local/bin/claude"
+
+# 生成超时（秒）
+# daily_timeout = 1200
+# weekly_timeout = 1500
+
+# prompt 覆盖（高级玩法：换成你自己的追踪主题，见 docs/custom-prompts.md）
+# 也可把自定义 prompt.md 直接放进 <数据目录>/daily/ 或 <数据目录>/weekly/
+# daily_prompt = "/path/to/my-daily-prompt.md"
+# weekly_prompt = "/path/to/my-weekly-prompt.md"
+
+# SMTP 投递配置。此处缺省值仅在本文件生效；对应环境变量
+# （SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASS/REPORT_TO_EMAIL）优先于本文件。
+# QQ 邮箱注意：pass 填「授权码」而非登录密码
+# （QQ 邮箱网页版 -> 设置 -> 账号 -> POP3/IMAP/SMTP 服务 -> 生成授权码）。
+[smtp]
+# host = "smtp.qq.com"
+# port = 587
+# user = "your-qq@qq.com"
+# pass = "your-smtp-auth-code"
+# to_email = "your-qq@qq.com"   # 自邮自收，也可填其他收件地址

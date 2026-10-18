@@ -1,0 +1,14 @@
+# frontier-report crontab 示例
+# crontab -e 后粘贴（路径按实际安装位置调整，可用 which frontier-report 查看）
+
+# 每天 08:00 生成并投递 AI 前沿日报
+0 8 * * * $HOME/.local/bin/frontier-report daily >> $HOME/.frontier-report/cron.log 2>&1
+
+# 每周六 08:30 生成并投递 AI 技术与思路周报
+30 8 * * 6 $HOME/.local/bin/frontier-report weekly >> $HOME/.frontier-report/cron.log 2>&1
+
+# 提示：
+# - cron 环境变量极简，SMTP_* / REPORT_TO_EMAIL 建议写入
+#   ~/.frontier-report/config.toml 的 [smtp] 段，而非依赖 shell profile
+# - claude CLI 若不在 cron 默认 PATH（/usr/bin:/bin），
+#   在 config.toml 用 claude_exe 写绝对路径

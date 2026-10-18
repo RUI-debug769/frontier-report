@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+
+# 本地配置与数据（含凭据，绝不上库）
+config.toml
+.env
+.env.local
+data/
+frontier-report-data/
+
+# 测试与工具缓存
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 系统垃圾
+.DS_Store
+Thumbs.db
+*.suo
+*.bak*

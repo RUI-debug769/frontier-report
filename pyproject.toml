@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "frontier-report"
+version = "0.1.0"
+description = "AI 前沿日报/周报自动生成与投递：headless Claude 深研 → 严格 JSON 契约 → 暖陶暗色 HTML → SMTP 邮件"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Klein" }]
+keywords = ["ai", "newsletter", "daily-report", "claude", "smtp"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Communications :: Email",
+]
+# 零第三方运行时依赖（纯标准库）
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/RUI-debug769/frontier-report"
+Issues = "https://github.com/RUI-debug769/frontier-report/issues"
+
+[project.scripts]
+frontier-report = "frontier_report.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+frontier_report = ["prompts/*.md"]
