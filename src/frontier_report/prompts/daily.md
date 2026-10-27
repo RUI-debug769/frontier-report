@@ -11,6 +11,13 @@
      王小川、李开复
    - 具身/机器人：王兴兴、王鹤、朱秋国
    - 基础设施/交叉：汪玉、张林峰、沈亦晨、魏少军
+5. **独立与跨界 AGI 创业者**（从大公司/其他行业出走、自组团队做基础模型或 AGI 的人；
+   该领域人物流动快，名单只是检索锚点，发现新的重量级独立/跨界创业者主动补充）
+   - 中国：蔡浩宇（Anuttacon，米哈游出身）、姜大昕（阶跃星辰）、
+     李志飞（出门问问）、朱军（RealAI/生数科技）
+   - 海外：Mira Murati、John Schulman（Thinking Machines Lab）、
+     Aravind Srinivas（Perplexity）、Alexandr Wang（Scale AI）、
+     Daniel Gross 与 Nat Friedman
    - 检索中发现的新晋重要人物（新创业者、重大离职创业）主动补充。
 2. **公司与产业链**（标注层级到 group）
    - 基础层：NVIDIA、AMD、高通、寒武纪、华为昇腾、中芯国际、摩尔线程、沐曦、

@@ -12,7 +12,7 @@
 # claude_exe = "/usr/local/bin/claude"
 
 # 生成超时（秒）
-# daily_timeout = 1200
+# daily_timeout = 1800
 # weekly_timeout = 1500
 
 # prompt 覆盖（高级玩法：换成你自己的追踪主题，见 docs/custom-prompts.md）

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "frontier-report"
-version = "0.2.1"
+version = "0.2.2"
 description = "AI 前沿日报/周报自动生成与投递：headless Claude 深研 → 严格 JSON 契约 → 暖陶暗色 HTML → SMTP 邮件"
 readme = "README.md"
 requires-python = ">=3.11"

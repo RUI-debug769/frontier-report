@@ -96,7 +96,7 @@ frontier-report weekly
 | 发信账号 | `SMTP_USER` | `[smtp] user` | **必填** |
 | SMTP 密码/授权码 | `SMTP_PASS` | `[smtp] pass` | **必填** |
 | 收件地址 | `REPORT_TO_EMAIL` | `[smtp] to_email` | **必填** |
-| 日报/周报超时（秒） | — | `daily_timeout` / `weekly_timeout` | 1200 / 1500 |
+| 日报/周报超时（秒） | — | `daily_timeout` / `weekly_timeout` | 1800 / 1500 |
 | prompt 覆盖 | — | `daily_prompt` / `weekly_prompt` | 包内置 |
 
 config.toml 搜索顺序：`--config` > `$FRONTIER_REPORT_CONFIG` > `./config.toml` >

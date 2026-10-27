@@ -36,7 +36,7 @@ class Config:
     data_dir: str = field(default_factory=lambda: _expand(DEFAULT_DATA_DIR))
     config_path: Optional[str] = None       # 实际命中的配置文件（未命中为 None）
     claude_exe: Optional[str] = None        # None -> 自动发现
-    daily_timeout: int = 1200               # 秒
+    daily_timeout: int = 1800               # 秒（Paper+概念板块检索多，30 分钟）
     weekly_timeout: int = 1500              # 秒
     daily_prompt: Optional[str] = None      # 日报 prompt 覆盖路径
     weekly_prompt: Optional[str] = None     # 周报 prompt 覆盖路径
@@ -98,7 +98,7 @@ def load_config(config_path=None, data_dir=None):
         data_dir=_expand(resolved_data_dir),
         config_path=path,
         claude_exe=doc.get("claude_exe") or None,
-        daily_timeout=int(doc.get("daily_timeout", 1200)),
+        daily_timeout=int(doc.get("daily_timeout", 1800)),
         weekly_timeout=int(doc.get("weekly_timeout", 1500)),
         daily_prompt=_expand(doc["daily_prompt"]) if doc.get("daily_prompt") else None,
         weekly_prompt=_expand(doc["weekly_prompt"]) if doc.get("weekly_prompt") else None,
