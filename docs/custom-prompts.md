@@ -29,7 +29,7 @@ prompt 里声明的输出结构由校验器强制执行，二者必须一致：
 
 | 报告 | 校验器 | 关键约束 |
 |------|--------|----------|
-| 日报 | `daily.py:_validate_daily` | `briefs` 3–5 条；`sections` 固定 4 个且 id 顺序锁定（people/companies/events/policy），items 各 0–12 条；`papers` 2–4 条（kind 限 hot/theory）；`concept_new` 必填；`concept_reviews` 0–3 条且 name 须匹配当日注入的复习清单；`deep_reads` 1–2 条、url 限 http(s) |
+| 日报 | `daily.py:_validate_daily` | `briefs` 3–5 条；`sections` 固定 5 个且 id 顺序锁定（people/companies/events/policy/hackathons），前四 items 各 0–12 条，hackathons 0–6 条（deadline 不早于当天、url 限 http(s) 或空串）；`papers` 2–4 条（kind 限 hot/theory）；`concept_new` 必填；`concept_reviews` 0–3 条且 name 须匹配当日注入的复习清单；`deep_reads` 1–2 条、url 限 http(s) |
 | 周报 | `weekly.py:_validate_weekly` | 1 条 `headline` + `items` 5–7 条（concept/idea/path，path ≤2 且与总数联动）+ `signal.points` 3–5 条 |
 
 换主题时有两条路：

@@ -5,6 +5,7 @@ import shutil
 import tempfile
 import time
 import unittest
+from datetime import date
 from unittest import mock
 
 from frontier_report import config as _config
@@ -27,6 +28,9 @@ def _base():
                 {"name": "放缓联盟", "text": "持续跟踪"}]},
             {"id": "policy", "items": [
                 {"name": "中国", "text": "框架 3.0"}]},
+            {"id": "hackathons", "items": [
+                {"name": "示例黑客松", "text": "AI 应用开发赛", "group": "杭州",
+                 "deadline": "2099-12-31", "url": "https://x/h"}]},
         ],
         "papers": [
             {"title": "论文甲", "source": "arXiv:2510.00001", "kind": "hot",
@@ -72,7 +76,7 @@ class ValidateBriefsTests(unittest.TestCase):
 
 class ValidateSectionsTests(unittest.TestCase):
     def test_wrong_count(self):
-        d = _base(); d["sections"] = d["sections"][:3]
+        d = _base(); d["sections"] = d["sections"][:4]
         with self.assertRaises(dr.DailyReportError):
             dr.parse_daily_json(json.dumps(d))
 
@@ -123,6 +127,89 @@ class ValidateSectionsTests(unittest.TestCase):
         # idx 超出 SECTION_IDS 时防御分支不得再抛 IndexError
         with self.assertRaises(dr.DailyReportError):
             dr._validate_section({"id": "bogus", "items": []}, 9)
+
+
+class ValidateHackathonsTests(unittest.TestCase):
+    def setUp(self):
+        self.today = date(2026, 10, 27)
+
+    def test_ok(self):
+        out = dr.parse_daily_json(json.dumps(_base()), today=self.today)
+        h = next(s for s in out["sections"] if s["id"] == "hackathons")
+        self.assertEqual(h["items"][0]["group"], "杭州")
+
+    def test_empty_items_valid(self):
+        d = _base(); d["sections"][4]["items"] = []
+        out = dr.parse_daily_json(json.dumps(d), today=self.today)
+        h = next(s for s in out["sections"] if s["id"] == "hackathons")
+        self.assertEqual(h["items"], [])
+
+    def test_too_many_items(self):
+        d = _base()
+        d["sections"][4]["items"] = [
+            {"name": "n%d" % i, "text": "t", "group": "线上",
+             "deadline": "2099-01-01", "url": ""} for i in range(7)]
+        with self.assertRaises(dr.DailyReportError):
+            dr.parse_daily_json(json.dumps(d), today=self.today)
+
+    def test_expired_deadline_rejected(self):
+        d = _base()
+        d["sections"][4]["items"][0]["deadline"] = "2026-10-26"
+        with self.assertRaisesRegex(dr.DailyReportError, "已过报名截止日"):
+            dr.parse_daily_json(json.dumps(d), today=self.today)
+
+    def test_today_deadline_accepted(self):
+        d = _base()
+        d["sections"][4]["items"][0]["deadline"] = "2026-10-27"
+        out = dr.parse_daily_json(json.dumps(d), today=self.today)
+        h = next(s for s in out["sections"] if s["id"] == "hackathons")
+        self.assertEqual(h["items"][0]["deadline"], "2026-10-27")
+
+    def test_bad_date_format(self):
+        d = _base()
+        d["sections"][4]["items"][0]["deadline"] = "2026/11/01"
+        with self.assertRaises(dr.DailyReportError):
+            dr.parse_daily_json(json.dumps(d), today=self.today)
+
+    def test_empty_url_allowed_with_channel_in_text(self):
+        d = _base()
+        d["sections"][4]["items"][0]["url"] = ""
+        out = dr.parse_daily_json(json.dumps(d), today=self.today)
+        self.assertEqual(out["sections"][4]["items"][0]["url"], "")
+
+    def test_non_http_url_rejected(self):
+        d = _base()
+        d["sections"][4]["items"][0]["url"] = "javascript:x"
+        with self.assertRaises(dr.DailyReportError):
+            dr.parse_daily_json(json.dumps(d), today=self.today)
+
+    def test_news_link_does_not_count_as_url(self):
+        # 新闻报道链接冒充官方报名页：schema 不判语义，但 prompt 禁止；
+        # 这里保证 url 为空时 text 必须带渠道（由 prompt 约束，校验只保证形态）
+        d = _base()
+        d["sections"][4]["items"][0] = {
+            "name": "公众号赛", "text": "在公众号报名", "group": "线上",
+            "deadline": "2099-01-01", "url": ""}
+        out = dr.parse_daily_json(json.dumps(d), today=self.today)
+        self.assertEqual(out["sections"][4]["items"][0]["text"], "在公众号报名")
+
+    def test_items_sorted_by_deadline(self):
+        d = _base()
+        d["sections"][4]["items"] = [
+            {"name": "晚", "text": "t", "group": "线上",
+             "deadline": "2099-12-31", "url": ""},
+            {"name": "早", "text": "t", "group": "杭州",
+             "deadline": "2099-01-01", "url": ""},
+        ]
+        out = dr.parse_daily_json(json.dumps(d), today=self.today)
+        names = [it["name"] for it in out["sections"][4]["items"]]
+        self.assertEqual(names, ["早", "晚"])
+
+    def test_missing_group_rejected(self):
+        d = _base()
+        del d["sections"][4]["items"][0]["group"]
+        with self.assertRaises(dr.DailyReportError):
+            dr.parse_daily_json(json.dumps(d), today=self.today)
 
 
 class ValidateDeepTests(unittest.TestCase):
@@ -313,6 +400,19 @@ class RenderTextTests(unittest.TestCase):
         self.assertIn("门控路由到少数专家", t)
         self.assertIn("关联：今日架构新闻", t)
 
+    def test_hackathon_block_with_countdown_and_link(self):
+        t = dr.render_daily_text(self.data, "2026-10-27")
+        self.assertIn("赛事机会 · HACKATHONS", t)
+        self.assertIn("示例黑客松（杭州｜截止 2099-12-31，剩", t)
+        self.assertIn("报名：https://x/h", t)
+
+    def test_hackathon_today_deadline_wording(self):
+        d = _base()
+        d["sections"][4]["items"][0]["deadline"] = "2026-10-27"
+        data = dr.parse_daily_json(json.dumps(d), today=date(2026, 10, 27))
+        t = dr.render_daily_text(data, "2026-10-27")
+        self.assertIn("今日截止", t)
+
     def test_reviews_block_only_when_present(self):
         t = dr.render_daily_text(self.data, "2026-09-23")
         self.assertNotIn("间隔复习", t)  # _base 的 reviews 为空
@@ -357,6 +457,22 @@ class RenderHtmlTests(unittest.TestCase):
         self.assertIn(">热门<", h)
         self.assertIn(">理论<", h)
         self.assertIn("稀疏注意力", h)
+
+    def test_hackathon_html(self):
+        data = dr.parse_daily_json(json.dumps(_base()),
+                                   today=date(2026, 10, 27))
+        h = dr.render_daily_html(data, "2026-10-27")
+        self.assertIn("赛事机会", h)
+        self.assertIn("示例黑客松", h)
+        self.assertIn("杭州", h)
+        self.assertIn("2099-12-31", h)
+        self.assertIn('href="https://x/h"', h)
+
+    def test_hackathon_empty_omitted_html(self):
+        d = _base(); d["sections"][4]["items"] = []
+        data = dr.parse_daily_json(json.dumps(d))
+        h = dr.render_daily_html(data, "2026-09-23")
+        self.assertNotIn("赛事机会", h)
 
     def test_concept_html(self):
         h = self.h
@@ -457,6 +573,13 @@ class BuildPromptTests(unittest.TestCase):
             "R=<<CONCEPT_REVIEW>> K=<<CONCEPT_KNOWN>>", {"concepts": []}, [])
         self.assertIn("无到期复习", prompt)
         self.assertIn("为空", prompt)
+
+    def test_today_placeholder_injected(self):
+        prompt = dr.build_daily_prompt(
+            "今天是 {{TODAY}}", {"concepts": []}, [],
+            today=date(2026, 10, 27))
+        self.assertIn("今天是 2026-10-27", prompt)
+        self.assertNotIn("{{TODAY}}", prompt)
 
 
 class RunDailyTests(unittest.TestCase):

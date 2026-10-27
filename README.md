@@ -16,7 +16,8 @@
 ## 效果
 
 - **日报**：今日速览（3–5 条）+ 四栏目（领军人物 / 公司与产业链 / 重大事件 /
-  政策与监管）+ **热门 Paper 技术**（2–4 篇，标注热门应用/理论创新）+
+  政策与监管）+ **赛事机会**（在报 AI 黑客松，杭州/长三角+线上优先，
+  按截止日倒计时）+ **热门 Paper 技术**（2–4 篇，标注热门应用/理论创新）+
   **每日一概念**（AI/数学/CS 概念精讲，按半衰期模型间隔复习）+ 值得深读，
   约 5 分钟扫读
 - **周报**：聚合最近 7 份日报做跨日综合，1 条头条 + 5–7 张概念/想法/路径卡片
@@ -148,8 +149,10 @@ cp -r skill/frontier-report ~/.claude/skills/frontier-report
 
 ## JSON 契约
 
-- **日报**：`briefs` 3–5 条；`sections` 固定 4 个且 id 顺序锁定
-  （people / companies / events / policy），每栏目 items 0–12 条；
+- **日报**：`briefs` 3–5 条；`sections` 固定 5 个且 id 顺序锁定
+  （people / companies / events / policy / hackathons），前四栏目 items 0–12 条，
+  hackathons 0–6 条（group=城市/「线上」，deadline=YYYY-MM-DD 且不早于当天，
+  url 为官方报名页或空串）；
   companies 必标分层（基础层 / 技术层 / 应用层）；
   `papers` 2–4 条（kind 限 hot/theory，url 限 http(s)）；
   `concept_new` 必填（name / one_liner / explanation，news_hook 可空）；

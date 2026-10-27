@@ -16,6 +16,7 @@ log 默认为 no-op，由 frontier_report.cli 在运行时绑定真实 logger。
 import json
 import os
 import time
+from datetime import date, datetime
 from importlib import resources
 
 from . import common as rc
@@ -25,13 +26,15 @@ from . import theme as wt
 
 DAILY_DIR = None  # None -> 运行时从 config 推导；测试可 patch 为临时目录
 
-SECTION_IDS = ["people", "companies", "events", "policy"]
+SECTION_IDS = ["people", "companies", "events", "policy", "hackathons"]
 SECTION_TITLES = {
     "people": ("领军人物", "PEOPLE"),
     "companies": ("公司与产业链", "COMPANIES"),
     "events": ("重大事件", "EVENTS"),
     "policy": ("政策与监管", "POLICY"),
+    "hackathons": ("赛事机会", "HACKATHONS"),
 }
+HACKATHON_MAX_ITEMS = 6
 
 PAPER_KINDS = ("hot", "theory")
 PAPER_KIND_STYLE = {
@@ -79,8 +82,10 @@ def _load_daily_prompt():
 
 
 def build_daily_prompt(template, store, due, today=None):
-    """模板注入概念调度信息：复习清单 + 已知概念名单。"""
+    """模板注入概念调度信息、复习清单、已知概念名单与今日日期。"""
+    today_s = (today or date.today()).strftime("%Y-%m-%d")
     return (template
+            .replace("{{TODAY}}", today_s)
             .replace("<<CONCEPT_REVIEW>>",
                      concepts.format_review_block(due, today=today))
             .replace("<<CONCEPT_KNOWN>>", concepts.format_known_names(store)))
@@ -107,7 +112,7 @@ def _validate_item(obj, idx):
     return {"name": name, "text": text, "group": g.strip()}
 
 
-def _validate_section(obj, idx):
+def _validate_section(obj, idx, today=None):
     if not isinstance(obj, dict):
         raise DailyReportError("sections[%d] 不是对象" % idx)
     sid = obj.get("id")
@@ -119,7 +124,43 @@ def _validate_section(obj, idx):
     items = obj.get("items")
     if not isinstance(items, list) or len(items) > 12:
         raise DailyReportError("sections[%d].items 必须为 0-12 条数组" % idx)
+    if sid == "hackathons":
+        if len(items) > HACKATHON_MAX_ITEMS:
+            raise DailyReportError(
+                "hackathons items 至多 %d 条" % HACKATHON_MAX_ITEMS)
+        return {"id": sid,
+                "items": [_validate_hackathon(it, j, today)
+                          for j, it in enumerate(items)]}
     return {"id": sid, "items": [_validate_item(it, j) for j, it in enumerate(items)]}
+
+
+def _validate_hackathon(obj, idx, today=None):
+    if not isinstance(obj, dict):
+        raise DailyReportError("hackathons.items[%d] 不是对象" % idx)
+    name = _req_str(obj, "name", "hackathons.items[%d].name" % idx)
+    text = _req_str(obj, "text", "hackathons.items[%d].text" % idx)
+    group = _req_str(obj, "group", "hackathons.items[%d].group" % idx)
+    deadline_s = _req_str(
+        obj, "deadline", "hackathons.items[%d].deadline" % idx)
+    url = _req_str(obj, "url", "hackathons.items[%d].url" % idx,
+                   allow_empty=True)
+    try:
+        deadline = datetime.strptime(deadline_s, "%Y-%m-%d").date()
+    except ValueError:
+        raise DailyReportError(
+            "hackathons.items[%d].deadline 必须为 YYYY-MM-DD，实际 %r"
+            % (idx, deadline_s))
+    today = today or date.today()
+    if deadline < today:
+        raise DailyReportError(
+            "hackathons.items[%d] 已过报名截止日（%s < %s），不得收录"
+            % (idx, deadline_s, today.strftime("%Y-%m-%d")))
+    if url and not url.lower().startswith(("http://", "https://")):
+        raise DailyReportError(
+            "hackathons.items[%d].url 必须以 http(s):// 开头或为空字符串"
+            % idx)
+    return {"name": name, "text": text, "group": group,
+            "deadline": deadline_s, "url": url}
 
 
 def _check_url(url, label):
@@ -195,7 +236,7 @@ def _validate_concept_reviews(obj, due):
     return norm
 
 
-def _validate_daily(data, due=None):
+def _validate_daily(data, due=None, today=None):
     if not isinstance(data, dict):
         raise DailyReportError("顶层不是 JSON 对象")
 
@@ -212,9 +253,14 @@ def _validate_daily(data, due=None):
         norm_briefs.append(b)
 
     sections = data.get("sections")
-    if not isinstance(sections, list) or len(sections) != 4:
-        raise DailyReportError("sections 必须为固定 4 个元素")
-    norm_sections = [_validate_section(s, i) for i, s in enumerate(sections)]
+    if not isinstance(sections, list) or len(sections) != 5:
+        raise DailyReportError("sections 必须为固定 5 个元素")
+    norm_sections = [_validate_section(s, i, today=today)
+                     for i, s in enumerate(sections)]
+    # 赛事按截止日升序（prompt 已要求模型排序；此处兜底保证）
+    for s in norm_sections:
+        if s["id"] == "hackathons":
+            s["items"].sort(key=lambda it: it["deadline"])
 
     papers = data.get("papers")
     if not isinstance(papers, list) or not (2 <= len(papers) <= 4):
@@ -234,12 +280,13 @@ def _validate_daily(data, due=None):
             "concept_reviews": norm_reviews, "deep_reads": norm_deeps}
 
 
-def parse_daily_json(raw, due=None):
+def parse_daily_json(raw, due=None, today=None):
     """提取并校验日报；垃圾输入给泛化文案，schema 失败冒泡最近原因。
-    due 为当日到期复习清单（concepts.due_reviews 的结果），用于校验
-    concept_reviews 的名称匹配。"""
+    due 为当日到期复习清单；today 为日期锚点（date 对象，默认今天），
+    用于赛事截止日校验。"""
     try:
-        return rc.extract_json(raw, validator=lambda obj: _validate_daily(obj, due))
+        return rc.extract_json(
+            raw, validator=lambda obj: _validate_daily(obj, due, today))
     except rc.JsonExtractError as e:
         if e.reason is not None:
             raise DailyReportError(
@@ -249,6 +296,24 @@ def parse_daily_json(raw, due=None):
 
 
 _CIRCLED = ["①", "②", "③", "④", "⑤"]
+
+
+def _days_remaining(deadline_s, date_str):
+    try:
+        d0 = datetime.strptime(date_str, "%Y-%m-%d").date()
+        d1 = datetime.strptime(deadline_s, "%Y-%m-%d").date()
+        return (d1 - d0).days
+    except ValueError:
+        return None
+
+
+def _countdown_text(deadline_s, date_str):
+    n = _days_remaining(deadline_s, date_str)
+    if n is None:
+        return "截止日见官方页"
+    if n == 0:
+        return "今日截止"
+    return "剩%d天" % n
 
 
 def render_daily_text(data, date_str):
@@ -268,6 +333,15 @@ def render_daily_text(data, date_str):
         L.append("")
         L.append("-" * 34)
         L.append("%s · %s" % (cn, en))
+        if sec["id"] == "hackathons":
+            for it in sec["items"]:
+                L.append("· %s（%s｜截止 %s，%s）"
+                         % (it["name"], it["group"], it["deadline"],
+                            _countdown_text(it["deadline"], date_str)))
+                L.append("  %s" % it["text"])
+                if it["url"]:
+                    L.append("  报名：%s" % it["url"])
+            continue
         last_group = None
         for it in sec["items"]:
             if sec["id"] == "companies" and it["group"] and it["group"] != last_group:
@@ -340,12 +414,35 @@ def _section_head(cn, en):
         % (wt.TITLE_FONT, wt.TEXT_CARD_TITLE, wt.esc(cn), wt.TEXT_RIGHT, en))
 
 
-def _section_html(sec):
+def _hackathon_item_html(it, date_str):
+    countdown = _countdown_text(it["deadline"], date_str)
+    link = ""
+    if it["url"]:
+        link = ('<a href="%s" style="font-size:12px;color:%s;text-decoration:none;">报名链接 →</a>'
+                % (wt.esc(it["url"]), wt.ACCENT))
+    return (
+        '<table role="presentation" cellpadding="0" cellspacing="0" width="100%%">'
+        '<tr><td style="padding:8px 0;border-top:1px solid rgba(255,255,255,.05);">'
+        '<div style="font-size:13px;font-weight:600;color:%s;">%s '
+        '<span style="font-size:10.5px;font-weight:400;color:%s;margin-left:6px;">%s · 截止 %s · %s</span>'
+        '</div>'
+        '<div style="font-size:12.5px;line-height:1.65;color:%s;margin-top:3px;">%s</div>'
+        '<div style="margin-top:4px;">%s</div>'
+        '</td></tr></table>'
+        % (wt.ACCENT_SOFT, wt.esc(it["name"]), wt.TEXT_RIGHT,
+           wt.esc(it["group"]), wt.esc(it["deadline"]), countdown,
+           wt.TEXT_BODY, wt.esc(it["text"]), link))
+
+
+def _section_html(sec, date_str=None):
     items = sec["items"]
     if not items:
         return ""
     cn, en = SECTION_TITLES[sec["id"]]
     head = _section_head(cn, en)
+
+    if sec["id"] == "hackathons":
+        return head + "".join(_hackathon_item_html(it, date_str) for it in items)
 
     rows = []
     last_group = None
@@ -459,7 +556,7 @@ def render_daily_html(data, date_str):
         '%s</td></tr></table>'
         % (wt.BG_SIGNAL, wt.ACCENT, _brief_html(data["briefs"])))
 
-    sections = "".join(_section_html(s) for s in data["sections"])
+    sections = "".join(_section_html(s, date_str) for s in data["sections"])
     deep_card = wt.dashed_card("值得深读 · DEEP READ", _deep_html(data["deep_reads"]))
 
     inner = (
@@ -492,6 +589,11 @@ SAMPLE_DATA = {
             {"name": "放缓联盟", "text": "巨头联名后遭反垄断集体诉讼。", "group": ""}]},
         {"id": "policy", "items": [
             {"name": "中国", "text": "发布安全治理框架 3.0。", "group": ""}]},
+        {"id": "hackathons", "items": [
+            {"name": "示例 AI 黑客松", "text": "基于具身基座模型完成仿真任务，"
+                                            "线上初赛可选报真机赛道。",
+             "group": "杭州", "deadline": "2099-01-31",
+             "url": "https://example.com/hack"}]},
     ],
     "papers": [
         {"title": "示例论文：稀疏注意力的新纪元", "source": "arXiv:2510.00001",
@@ -566,7 +668,7 @@ def run_daily():
         return 1
 
     try:
-        data = parse_daily_json(raw, due=due)
+        data = parse_daily_json(raw, due=due, today=date.today())
     except DailyReportError as e:
         fp = os.path.join(daily_dir,
                           "failed-output-%s.txt" % time.strftime("%Y-%m-%d"))
