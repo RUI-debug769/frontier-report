@@ -129,6 +129,20 @@ def _cmd_doctor(cfg):
     else:
         print("[-- ] 配置文件: 未找到（全部使用默认值与环境变量）")
 
+    # 豆包搜索 MCP 注册状态（可选增强：有它中文信源检索更稳）
+    mcp_ok = False
+    try:
+        import json as _json
+        with open(os.path.expanduser("~/.claude.json"),
+                  encoding="utf-8") as f:
+            mcp_ok = "doubao-search" in (_json.load(f).get("mcpServers") or {})
+    except (OSError, ValueError):
+        pass
+    if mcp_ok:
+        print("[OK ] 豆包搜索 MCP: 已注册（doubao-search）")
+    else:
+        print("[-- ] 豆包搜索 MCP: 未注册（可选，实时检索将只用 WebSearch/WebFetch）")
+
     print()
     if all_ok:
         print("体检通过，可以运行 frontier-report daily / weekly")

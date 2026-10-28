@@ -185,13 +185,16 @@ def _child_env():
     return env
 
 
-def run_claude(prompt, timeout, extra_tools=("WebSearch", "WebFetch"),
+def run_claude(prompt, timeout, extra_tools=("WebSearch", "WebFetch",
+               "mcp__doubao-search__web_search"),
                claude_exe=None):
     """UTF-8 stdin 注入调 claude CLI。返回三元组 (returncode, stdout, stderr)：
     stdout/stderr 分流——CLI 把模型目录警告、[claude-code:*] 遥测打到 stderr，
     并入 stdout 会让 JSON 提取先命中遥测小 JSON。两者 decode(utf-8,replace) 并剥 ANSI。
 
-    claude_exe 为 None 时经 config.resolve_claude_exe 自动发现。"""
+    claude_exe 为 None 时经 config.resolve_claude_exe 自动发现。
+    默认放开豆包搜索 MCP 工具（火山官方 search-infinity，user scope 注册后生效；
+    未注册时 allowedTools 里的 MCP 条目静默无效，不影响其他工具）。"""
     if claude_exe is None:
         from . import config as _config
         claude_exe = _config.resolve_claude_exe(_config.get_config())
