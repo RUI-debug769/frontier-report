@@ -18,6 +18,8 @@ from importlib import resources
 
 from . import common as rc
 from . import config as _config
+from . import degrade
+from . import fetch_sources
 from . import theme as wt
 
 DAILY_DIR = None   # None -> config 的 <data_dir>/daily；测试可 patch
@@ -294,8 +296,8 @@ def render_weekly_html(data, issue, date_str):
     return wt.panel_page("AI 技术与思路周报 No.%02d" % issue, inner)
 
 
-def build_weekly_prompt(digests, weekly_dir=None, template=None):
-    """prompt 模板注入日报素材与聚合说明。
+def build_weekly_prompt(digests, weekly_dir=None, template=None, fetched=None):
+    """prompt 模板注入日报素材、聚合说明与本地一手素材缓存。
 
     template 未给定时按三级来源解析（config 覆盖 > weekly_dir/prompt.md >
     包内置模板）；weekly_dir 仅供测试与兼容显式指定。模板不可用抛
@@ -319,7 +321,10 @@ def build_weekly_prompt(digests, weekly_dir=None, template=None):
     else:
         note = "本周无可用日报素材，本期全部依赖你的增量联网深研。"
         digest = "（本周无可用日报素材）"
-    return tpl.replace("<<DIGEST_NOTE>>", note).replace("<<DAILY_DIGEST>>", digest)
+    fetched_s = fetched if fetched is not None else "（无本地素材）"
+    return (tpl.replace("<<DIGEST_NOTE>>", note)
+              .replace("<<DAILY_DIGEST>>", digest)
+              .replace("<<FETCHED_SOURCES>>", fetched_s))
 
 
 SAMPLE_DATA = {
@@ -364,37 +369,24 @@ def _run_claude(prompt):
     return rc.run_claude(prompt, _config.get_config().weekly_timeout)
 
 
-def run_weekly():
-    log("=== weekly report task start ===")
-    digests, missing = collect_daily_reports()
-    if missing:
-        log("WARN 缺失/损坏日报: %s" % ", ".join(missing))
-    if not digests:
-        log("WARN 本周无任何可用日报，完全依赖增量深研")
-    try:
-        prompt = build_weekly_prompt(digests)
-    except WeeklyReportError as e:
-        log("ERROR: %s" % e)
-        return 1
-    log("prompt length: %d chars, digests: %d" % (len(prompt), len(digests)))
-
+def _one_attempt(prompt):
+    """单次周报生成尝试。成功返回 (data, None)，失败返回 (None, 原因)。"""
     try:
         code, raw, err = _run_claude(prompt)
     except Exception as e:
-        log("ERROR: claude 运行异常: %s" % e)
-        return 1
+        log("WARN claude 运行异常: %s" % e)
+        return None, "claude 运行异常: %s" % e
     if err.strip():
         log("WARN claude stderr: %s"
             % err[:500].replace("\r", " ").replace("\n", " "))
     log("claude exit=%d output length=%d" % (code, len(raw)))
     if code != 0:
-        log("ERROR: claude exit=%d，不存档不发信。output head: %s"
+        log("ERROR: claude exit=%d。output head: %s"
             % (code, raw[:200].replace("\n", " ")))
-        return 1
+        return None, "claude exit=%d" % code
     if not raw.strip():
         log("ERROR: claude 空输出")
-        return 1
-
+        return None, "claude 空输出"
     try:
         data = parse_weekly_json(raw)
     except WeeklyReportError as e:
@@ -403,10 +395,58 @@ def run_weekly():
         with open(fp, "w", encoding="utf-8") as f:
             f.write(raw)
         log("ERROR: JSON 校验失败（%s）；原始输出存 %s" % (e, fp))
+        return None, "JSON 校验失败：%s" % e
+    return data, None
+
+
+def run_weekly():
+    log("=== weekly report task start ===")
+    cfg = _config.get_config()
+    digests, missing = collect_daily_reports()
+    if missing:
+        log("WARN 缺失/损坏日报: %s" % ", ".join(missing))
+    if not digests:
+        log("WARN 本周无任何可用日报，完全依赖增量深研")
+
+    fetched, fetched_date = "（无本地素材）", None
+    if cfg.fetch_enabled:
+        try:
+            report, _ = fetch_sources.run_fetch(cfg.fetch_dir)
+            ok = [k for k, v in report.items() if v[0]]
+            log("素材预抓取完成: %s" % ("、".join(ok) if ok else "全部来源失败"))
+        except Exception as e:  # noqa: BLE001
+            log("WARN 素材预抓取异常: %s" % e)
+        cached = fetch_sources.load_latest(cfg.fetch_dir)
+        if cached:
+            fetched, fetched_date = cached
+
+    try:
+        prompt = build_weekly_prompt(digests, fetched=fetched)
+    except WeeklyReportError as e:
+        log("ERROR: %s" % e)
         return 1
+    log("prompt length: %d chars, digests: %d（素材 %s）"
+        % (len(prompt), len(digests), "有" if fetched_date else "无"))
+
+    data, last_err = None, "未尝试"
+    attempts = max(1, cfg.max_attempts)
+    for attempt in range(1, attempts + 1):
+        log("生成尝试 %d/%d" % (attempt, attempts))
+        data, last_err = _one_attempt(prompt)
+        if data is not None:
+            break
+        if attempt < attempts:
+            time.sleep(30 * attempt)
+
+    ds = time.strftime("%Y-%m-%d")
+
+    if data is None:
+        log("ERROR: %d 次生成均失败，进入降级简报。原因：%s"
+            % (attempts, last_err))
+        return degrade.send_degraded_report(
+            "weekly", last_err, fetched, _weekly_dir(), ds, log)
 
     issue = issue_number()
-    ds = time.strftime("%Y-%m-%d")
     text = render_weekly_text(data, issue, ds)
     htm = render_weekly_html(data, issue, ds)
 

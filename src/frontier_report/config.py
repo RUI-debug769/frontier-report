@@ -40,6 +40,8 @@ class Config:
     weekly_timeout: int = 1500              # 秒
     daily_prompt: Optional[str] = None      # 日报 prompt 覆盖路径
     weekly_prompt: Optional[str] = None     # 周报 prompt 覆盖路径
+    fetch_enabled: bool = True              # 生成前预抓取一手素材到本地缓存
+    max_attempts: int = 3                   # claude 生成失败重试次数（含首次）
 
     @property
     def daily_dir(self):
@@ -49,9 +51,14 @@ class Config:
     def weekly_dir(self):
         return os.path.join(self.data_dir, "weekly")
 
+    @property
+    def fetch_dir(self):
+        return os.path.join(self.data_dir, "fetch")
+
     def ensure_dirs(self):
         os.makedirs(self.daily_dir, exist_ok=True)
         os.makedirs(self.weekly_dir, exist_ok=True)
+        os.makedirs(self.fetch_dir, exist_ok=True)
 
 
 def _expand(p):
@@ -102,6 +109,8 @@ def load_config(config_path=None, data_dir=None):
         weekly_timeout=int(doc.get("weekly_timeout", 1500)),
         daily_prompt=_expand(doc["daily_prompt"]) if doc.get("daily_prompt") else None,
         weekly_prompt=_expand(doc["weekly_prompt"]) if doc.get("weekly_prompt") else None,
+        fetch_enabled=bool(doc.get("fetch_enabled", True)),
+        max_attempts=int(doc.get("max_attempts", 3)),
     )
 
     smtp = doc.get("smtp") or {}

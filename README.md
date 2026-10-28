@@ -139,6 +139,18 @@ xcopy /E /I skill\frontier-report %USERPROFILE%\.claude\skills\frontier-report
 cp -r skill/frontier-report ~/.claude/skills/frontier-report
 ```
 
+## 断网兜底与每日送达保障
+
+- **抓取/生成分离**：生成前自动把 arXiv（cs.AI/CL/LG/CV 最新提交）与
+  Hacker News 头条预抓取到 `<数据目录>/fetch/fetched-<日期>.md`，注入 prompt
+  作为一手素材底料；能联网时模型再用实时检索补充核验。抓取完全失败不阻断生成。
+- **代理自动发现**：抓取代理按 `HTTP(S)_PROXY` 环境变量 → Windows 系统代理
+  （注册表 Internet Settings）顺序发现，境外源抖动时自动重试。
+- **生成重试**：claude 调用失败/超时/JSON 校验不过，按 `max_attempts`（默认 3）
+  自动重试，间隔递增。
+- **降级简报**：多次重试仍失败时，用本地素材缓存发一封标题带 `[降级]` 的简报
+  （诚实标注非实时与失败原因），保证当天仍有邮件；下期自动恢复。
+
 ## 退出码
 
 | 码 | 含义 |

@@ -61,12 +61,19 @@ frontier-report 是一个已安装的 CLI：headless Claude 深研 → JSON 校�
    （默认数据目录 `~/.frontier-report`）。日志含每步状态与退出码语义。
    注意 run.log 在**首次实际运行后才生成**——文件不存在说明新装系统还没跑过，
    用存档文件日期与计划任务 LastRunTime 佐证，不要当成故障。
-3. **退出码 1（生成失败）**：看同目录 `failed-output-<日期>.txt` 里
-   模型的原始输出，对照日志中「最后一次校验」的原因——通常是模型没按
-   JSON 契约输出，属偶发，重跑一次或次日自愈；连续失败才需要调 prompt。
-4. **退出码 2（发信/环境）**：跑 `frontier-report doctor`，
+3. **退出码 1（启动期错误，如 prompt 模板不可用）**：看 run.log 具体行。
+   注意 0.4.0 起语义变化：生成失败不再静默缺报，而是重试 `max_attempts`
+   次后进入降级——发一封标题带 `[降级]` 的简报（素材取自
+   `<数据目录>/fetch/fetched-<日期>.md` 本地缓存），退出码仍为 0。
+   所以"没收到信"先看是不是收到了降级简报；收到降级简报说明模型链路
+   失败，看 run.log 里"生成尝试"与最后原因行。
+4. **抓取层问题**（fetch 来源失败、缓存为空）：抓取代理按
+   环境变量 → Windows 系统代理顺序自动发现；境外源抖动有内置重试。
+   排查顺序：代理软件是否在跑（127.0.0.1:7892）→
+   `fs._proxy_config()` 是否发现代理 → 手动跑 `python -c "from frontier_report import fetch_sources as fs; fs.run_fetch(...)"`。
+5. **退出码 2（发信/环境）**：跑 `frontier-report doctor`，
    按输出提示修复（SMTP 凭据缺失/授权码过期/claude CLI 未登录）。
-5. **claude CLI 本身**：doctor 会显示版本；若调用异常，
+6. **claude CLI 本身**：doctor 会显示版本；若调用异常，
    先确认 `claude` 已登录且额度未耗尽。
 
 排查结论用「退出码 + 日志关键行 + 建议动作」三段式汇报，不要只说"失败了"。
@@ -82,7 +89,7 @@ python -m unittest discover -s F:\project\frontier-report\tests
 ```
 
 仓库位置：`F:\project\frontier-report`（GitHub: RUI-debug769/frontier-report）。
-升级前跑测试（116 用例），全绿再重装。
+升级前跑测试（195 用例），全绿再重装。
 
 ## 边界（不要做的事）
 

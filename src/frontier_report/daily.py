@@ -22,6 +22,8 @@ from importlib import resources
 from . import common as rc
 from . import concepts
 from . import config as _config
+from . import degrade
+from . import fetch_sources
 from . import theme as wt
 
 DAILY_DIR = None  # None -> 运行时从 config 推导；测试可 patch 为临时目录
@@ -81,14 +83,16 @@ def _load_daily_prompt():
         return None
 
 
-def build_daily_prompt(template, store, due, today=None):
-    """模板注入概念调度信息、复习清单、已知概念名单与今日日期。"""
+def build_daily_prompt(template, store, due, today=None, fetched=None):
+    """模板注入概念调度信息、复习清单、已知概念名单、今日日期与本地素材。"""
     today_s = (today or date.today()).strftime("%Y-%m-%d")
+    fetched_s = fetched if fetched is not None else "（无本地素材）"
     return (template
             .replace("{{TODAY}}", today_s)
             .replace("<<CONCEPT_REVIEW>>",
                      concepts.format_review_block(due, today=today))
-            .replace("<<CONCEPT_KNOWN>>", concepts.format_known_names(store)))
+            .replace("<<CONCEPT_KNOWN>>", concepts.format_known_names(store))
+            .replace("<<FETCHED_SOURCES>>", fetched_s))
 
 
 def _req_str(obj, key, label, allow_empty=False):
@@ -631,9 +635,41 @@ def _run_claude_daily(prompt):
     return rc.run_claude(prompt, _config.get_config().daily_timeout)
 
 
+def _one_attempt(prompt, due, daily_dir):
+    """单次生成尝试：跑 claude 并解析。成功返回 (data, None)，
+    失败返回 (None, 原因字符串)（失败样本已存 failed-output）。"""
+    try:
+        code, raw, err = _run_claude_daily(prompt)
+    except Exception as e:
+        log("WARN claude 运行异常: %s" % e)
+        return None, "claude 运行异常: %s" % e
+    if err.strip():
+        log("WARN claude stderr: %s"
+            % err[:500].replace("\r", " ").replace("\n", " "))
+    log("claude exit=%d output length=%d" % (code, len(raw)))
+    if code != 0:
+        log("ERROR: claude exit=%d。output head: %s"
+            % (code, raw[:200].replace("\n", " ")))
+        return None, "claude exit=%d" % code
+    if not raw.strip():
+        log("ERROR: claude 空输出")
+        return None, "claude 空输出"
+    try:
+        data = parse_daily_json(raw, due=due, today=date.today())
+    except DailyReportError as e:
+        fp = os.path.join(daily_dir,
+                          "failed-output-%s.txt" % time.strftime("%Y-%m-%d"))
+        with open(fp, "w", encoding="utf-8") as f:
+            f.write(raw)
+        log("ERROR: JSON 校验失败（%s）；原始输出存 %s" % (e, fp))
+        return None, "JSON 校验失败：%s" % e
+    return data, None
+
+
 def run_daily():
     log("=== daily report task start ===")
     daily_dir = _daily_dir()
+    cfg = _config.get_config()
     try:
         store = concepts.load_store(daily_dir)
     except concepts.ConceptStoreError as e:
@@ -647,37 +683,44 @@ def run_daily():
     if template is None:
         log("ERROR: 日报 prompt 不可用（覆盖路径/数据目录/包内置均失败）")
         return 1
-    prompt = build_daily_prompt(template, store, due)
-    log("prompt length: %d chars（到期复习 %d 个）" % (len(prompt), len(due)))
 
-    try:
-        code, raw, err = _run_claude_daily(prompt)
-    except Exception as e:
-        log("ERROR: claude 运行异常: %s" % e)
-        return 1
-    if err.strip():
-        log("WARN claude stderr: %s"
-            % err[:500].replace("\r", " ").replace("\n", " "))
-    log("claude exit=%d output length=%d" % (code, len(raw)))
-    if code != 0:
-        log("ERROR: claude exit=%d，不存档不发信。output head: %s"
-            % (code, raw[:200].replace("\n", " ")))
-        return 1
-    if not raw.strip():
-        log("ERROR: claude 空输出")
-        return 1
+    # 1) 预抓取一手素材（可选，失败不阻断）
+    fetched, fetched_date = "（无本地素材）", None
+    if cfg.fetch_enabled:
+        try:
+            report, _ = fetch_sources.run_fetch(cfg.fetch_dir)
+            ok = [k for k, v in report.items() if v[0]]
+            log("素材预抓取完成: %s" % ("、".join(ok) if ok else "全部来源失败"))
+        except Exception as e:  # noqa: BLE001
+            log("WARN 素材预抓取异常（继续，改用实时检索）: %s" % e)
+        cached = fetch_sources.load_latest(cfg.fetch_dir)
+        if cached:
+            fetched, fetched_date = cached
 
-    try:
-        data = parse_daily_json(raw, due=due, today=date.today())
-    except DailyReportError as e:
-        fp = os.path.join(daily_dir,
-                          "failed-output-%s.txt" % time.strftime("%Y-%m-%d"))
-        with open(fp, "w", encoding="utf-8") as f:
-            f.write(raw)
-        log("ERROR: JSON 校验失败（%s）；原始输出存 %s" % (e, fp))
-        return 1
+    prompt = build_daily_prompt(template, store, due, fetched=fetched)
+    log("prompt length: %d chars（到期复习 %d 个，素材 %s）"
+        % (len(prompt), len(due), "有" if fetched_date else "无"))
+
+    # 2) 带重试的生成
+    data, last_err = None, "未尝试"
+    attempts = max(1, cfg.max_attempts)
+    for attempt in range(1, attempts + 1):
+        log("生成尝试 %d/%d" % (attempt, attempts))
+        data, last_err = _one_attempt(prompt, due, daily_dir)
+        if data is not None:
+            break
+        if attempt < attempts:
+            time.sleep(30 * attempt)
 
     ds = time.strftime("%Y-%m-%d")
+
+    # 3) 全部失败 → 降级简报（用本地素材缓存，保证有邮件）
+    if data is None:
+        log("ERROR: %d 次生成均失败，进入降级简报。原因：%s"
+            % (attempts, last_err))
+        return degrade.send_degraded_report(
+            "daily", last_err, fetched, daily_dir, ds, log)
+
     text = render_daily_text(data, ds)
     htm = render_daily_html(data, ds)
 

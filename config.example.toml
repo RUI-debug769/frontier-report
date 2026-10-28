@@ -15,6 +15,12 @@
 # daily_timeout = 1800
 # weekly_timeout = 1500
 
+# 生成前预抓取一手素材（arXiv/HN）到本地缓存，断网时作为底料；
+# 代理按 环境变量 → Windows 系统代理 顺序自动发现
+# fetch_enabled = true
+# claude 生成失败重试次数（含首次），仍失败则发[降级]简报保证每天有邮件
+# max_attempts = 3
+
 # prompt 覆盖（高级玩法：换成你自己的追踪主题，见 docs/custom-prompts.md）
 # 也可把自定义 prompt.md 直接放进 <数据目录>/daily/ 或 <数据目录>/weekly/
 # daily_prompt = "/path/to/my-daily-prompt.md"

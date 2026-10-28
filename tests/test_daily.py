@@ -581,10 +581,24 @@ class BuildPromptTests(unittest.TestCase):
         self.assertIn("今天是 2026-10-27", prompt)
         self.assertNotIn("{{TODAY}}", prompt)
 
+    def test_fetched_sources_injected(self):
+        prompt = dr.build_daily_prompt(
+            "F=<<FETCHED_SOURCES>>", {"concepts": []}, [],
+            fetched="## arXiv 素材")
+        self.assertIn("## arXiv 素材", prompt)
+        self.assertNotIn("<<FETCHED_SOURCES>>", prompt)
+
+    def test_fetched_sources_default_placeholder(self):
+        prompt = dr.build_daily_prompt(
+            "F=<<FETCHED_SOURCES>>", {"concepts": []}, [])
+        self.assertIn("无本地素材", prompt)
+
 
 class RunDailyTests(unittest.TestCase):
-    """run_daily 编排层：退出码契约（0/1/2）、"失败绝不发信"回归网、
-    概念调度状态更新时机。"""
+    """run_daily 编排层：退出码契约、重试、降级简报、概念调度状态更新时机。
+
+    0.3.x 起语义：生成失败经重试后不再静默空缺，而是发降级简报（仍返回 0，
+    因为邮件已发出）；1 仅保留给 prompt 不可用；2 为发信/凭据失败。"""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -600,9 +614,12 @@ class RunDailyTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.addCleanup(mock.patch.stopall)
         mock.patch.object(dr, "DAILY_DIR", self.tmp).start()
-        # 隔离全局 config：指向临时目录，避免真实环境配置泄漏进测试
+        # 隔离全局 config：禁用抓取（避免真实网络）、单次尝试（测试确定性）
         mock.patch.object(_config, "get_config",
-                          return_value=_config.Config(data_dir=self.tmp)).start()
+                          return_value=_config.Config(
+                              data_dir=self.tmp,
+                              fetch_enabled=False, max_attempts=1)).start()
+        mock.patch.object(dr.time, "sleep", return_value=None).start()
         self.run_claude = mock.patch.object(dr, "_run_claude_daily").start()
         mock.patch.object(dr.rc, "get_env",
                           side_effect=lambda n, d="": self.env.get(n, d)).start()
@@ -614,6 +631,12 @@ class RunDailyTests(unittest.TestCase):
     def _failed_output_exists(self):
         fp = os.path.join(self.tmp,
                           "failed-output-%s.txt" % time.strftime("%Y-%m-%d"))
+        return os.path.exists(fp)
+
+    def _degraded_exists(self):
+        fp = os.path.join(
+            self.tmp,
+            "ai-daily-report-%s.degraded.md" % time.strftime("%Y-%m-%d"))
         return os.path.exists(fp)
 
     def _archive_exists(self):
@@ -636,24 +659,28 @@ class RunDailyTests(unittest.TestCase):
 
     def test_claude_raises(self):
         self.run_claude.side_effect = RuntimeError("boom")
-        self.assertEqual(dr.run_daily(), 1)
-        self.send_mail.assert_not_called()
+        self.assertEqual(dr.run_daily(), 0)  # 降级后照常发信
+        self.send_mail.assert_called_once()
+        self.assertTrue(self._degraded_exists())
 
     def test_claude_nonzero_exit(self):
         self.run_claude.return_value = (1, "some output", "")
-        self.assertEqual(dr.run_daily(), 1)
-        self.send_mail.assert_not_called()
+        self.assertEqual(dr.run_daily(), 0)
+        self.send_mail.assert_called_once()
+        self.assertTrue(self._degraded_exists())
 
     def test_claude_empty_output(self):
         self.run_claude.return_value = (0, "   \n  ", "")
-        self.assertEqual(dr.run_daily(), 1)
-        self.send_mail.assert_not_called()
+        self.assertEqual(dr.run_daily(), 0)
+        self.send_mail.assert_called_once()
+        self.assertTrue(self._degraded_exists())
 
     def test_json_invalid(self):
         self.run_claude.return_value = (0, "not a json at all", "")
-        self.assertEqual(dr.run_daily(), 1)
-        self.send_mail.assert_not_called()
+        self.assertEqual(dr.run_daily(), 0)
+        self.send_mail.assert_called_once()  # 降级简报也发信
         self.assertTrue(self._failed_output_exists())
+        self.assertTrue(self._degraded_exists())
 
     def test_smtp_credentials_missing(self):
         self._claude_ok()
@@ -701,8 +728,9 @@ class RunDailyTests(unittest.TestCase):
 
     def test_store_not_updated_on_validation_failure(self):
         self.run_claude.return_value = (0, "garbage", "")
-        self.assertEqual(dr.run_daily(), 1)
+        self.assertEqual(dr.run_daily(), 0)  # 降级路径
         self.assertFalse(os.path.exists(self._store_path()))
+        self.assertTrue(self._degraded_exists())
 
     def test_review_flow_end_to_end(self):
         # 预置到期概念 → prompt 注入复习清单 → 模型复推 → 半衰期增长
@@ -738,9 +766,33 @@ class RunDailyTests(unittest.TestCase):
         d["concept_reviews"] = [
             {"name": "交叉熵", "recall_cue": "c", "essence": "e"}]
         self._claude_ok(d)
-        self.assertEqual(dr.run_daily(), 1)
-        self.send_mail.assert_not_called()
+        self.assertEqual(dr.run_daily(), 0)  # 校验失败 → 降级
         self.assertTrue(self._failed_output_exists())
+        self.assertTrue(self._degraded_exists())
+
+    def test_retry_then_success(self):
+        # max_attempts=3：前两次失败、第三次成功
+        mock.patch.object(_config, "get_config",
+                          return_value=_config.Config(
+                              data_dir=self.tmp, fetch_enabled=False,
+                              max_attempts=3)).start()
+        self.run_claude.side_effect = [
+            (1, "fail1", ""), (1, "fail2", ""), (0, json.dumps(_base()), "")]
+        self.assertEqual(dr.run_daily(), 0)
+        self.assertEqual(self.run_claude.call_count, 3)
+        self.assertTrue(self._archive_exists())
+
+    def test_degrade_after_all_attempts_fail(self):
+        mock.patch.object(_config, "get_config",
+                          return_value=_config.Config(
+                              data_dir=self.tmp, fetch_enabled=False,
+                              max_attempts=2)).start()
+        self.run_claude.side_effect = RuntimeError("down")
+        self.assertEqual(dr.run_daily(), 0)
+        self.assertEqual(self.run_claude.call_count, 2)
+        self.send_mail.assert_called_once()
+        # 降级主题带 [降级] 标记
+        self.assertIn("[降级]", self.send_mail.call_args[0][5])
 
 
 if __name__ == "__main__":
