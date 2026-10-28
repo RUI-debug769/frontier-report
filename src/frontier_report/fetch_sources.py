@@ -18,6 +18,9 @@ import urllib.request
 from datetime import date, timedelta
 
 ARXIV_API = "https://export.arxiv.org/api/query"
+# HN 首选 Algolia API（可按关键词+时间窗过滤，信号纯净）；
+# Firebase topstories 作为回退（无过滤但是官方端点）。
+HN_ALGOLIA = "https://hn.algolia.com/api/v1/search"
 HN_TOP = "https://hacker-news.firebaseio.com/v0/topstories.json"
 HN_ITEM = "https://hacker-news.firebaseio.com/v0/item/{id}.json"
 HF_DAILY = "https://huggingface.co/api/daily_papers"
@@ -137,10 +140,34 @@ def _tag(xml, name):
     return xml[a:b] if b > a else ""
 
 
-def fetch_hn(today=None):
-    """Hacker News 头条：标题 + 外链。返回 (markdown, 条数)。"""
+def _fetch_hn_algolia():
+    """Algolia HN API：过去 24h 的 AI 相关故事，按热度排序。"""
+    since = int(time.time()) - 86400
+    q = urllib.parse.urlencode({
+        "tags": "story",
+        "query": "AI",
+        "numericFilters": "points>10,created_at_i>%d" % since,
+        "hitsPerPage": HN_MAX,
+    })
+    data = json.loads(_http_get("%s?%s" % (HN_ALGOLIA, q)))
+    out = ["## Hacker News · 过去 24h AI 热帖（前 %d 条）" % HN_MAX]
+    n = 0
+    for h in data.get("hits", []):
+        title = (h.get("title") or "").strip()
+        if not title:
+            continue
+        url = h.get("url") or ("https://news.ycombinator.com/item?id=%s"
+                               % h.get("objectID"))
+        out.append("- %s（%s 分）\n  %s" % (title, h.get("points", 0), url))
+        n += 1
+    out.append("")
+    return "\n".join(out), n
+
+
+def _fetch_hn_firebase():
+    """回退：Firebase 官方端点取总榜（无 AI 过滤）。"""
     ids = json.loads(_http_get(HN_TOP))[:HN_MAX]
-    out = ["## Hacker News 头条（前 %d 条）" % len(ids)]
+    out = ["## Hacker News 头条（前 %d 条，未过滤）" % len(ids)]
     n = 0
     for i in ids:
         try:
@@ -156,6 +183,14 @@ def fetch_hn(today=None):
         n += 1
     out.append("")
     return "\n".join(out), n
+
+
+def fetch_hn(today=None):
+    """HN：Algolia AI 过滤优先，失败回退 Firebase 总榜。"""
+    try:
+        return _fetch_hn_algolia()
+    except Exception:  # noqa: BLE001 回退路径
+        return _fetch_hn_firebase()
 
 
 def fetch_hf(today=None):

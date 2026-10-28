@@ -21,6 +21,12 @@ ARXIV_ATOM = """<?xml version="1.0"?>
 
 def _fake_get_factory():
     def _fake(url, timeout=fs._TIMEOUT):
+        if fs.HN_ALGOLIA in url:
+            return json.dumps({"hits": [
+                {"title": "HN Alpha", "url": "https://x/a", "points": 100,
+                 "objectID": "101"},
+                {"title": "HN Beta", "url": "https://x/b", "points": 50,
+                 "objectID": "102"}]})
         if url == fs.HN_TOP:
             return json.dumps([101, 102])
         if "item/101" in url:
@@ -73,6 +79,18 @@ class RunFetchTests(unittest.TestCase):
     def test_load_latest_none(self):
         with tempfile.TemporaryDirectory() as d:
             self.assertIsNone(fs.load_latest(d))
+
+    def test_hn_algolia_failure_falls_back_to_firebase(self):
+        def fake(url, timeout=fs._TIMEOUT):
+            if fs.HN_ALGOLIA in url:
+                raise OSError("algolia down")
+            return _fake_get_factory()(url, timeout)
+        md, n = None, None
+        with mock.patch.object(fs, "_http_get", fake):
+            md, n = fs.fetch_hn()
+        self.assertEqual(n, 2)
+        self.assertIn("HN Alpha", md)
+        self.assertIn("未过滤", md)
 
 
 class RetryTests(unittest.TestCase):
